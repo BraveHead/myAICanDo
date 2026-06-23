@@ -324,10 +324,10 @@ function Thread() {
 
   return (
     <ThreadPrimitive.Root className="relative flex min-h-0 flex-1 flex-col">
-      <ThreadPrimitive.Viewport className="chat-scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-8 sm:px-8">
+      <ThreadPrimitive.Viewport className="chat-scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto px-4 sm:px-8">
         <div
           className={`mx-auto flex w-full max-w-[980px] flex-1 flex-col ${
-            isEmpty ? "justify-center pb-[18vh]" : "justify-end gap-5 pb-8"
+            isEmpty ? "justify-center pb-[18vh]" : "justify-end gap-5 py-8"
           }`}
         >
           {isEmpty ? (
@@ -341,6 +341,11 @@ function Thread() {
             />
           )}
         </div>
+        {!isEmpty && (
+          <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mx-auto w-full max-w-[860px] bg-white pb-5 pt-3">
+            <PromptComposer />
+          </ThreadPrimitive.ViewportFooter>
+        )}
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
   );
