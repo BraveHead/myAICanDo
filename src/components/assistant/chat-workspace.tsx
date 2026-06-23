@@ -5,9 +5,8 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
-  useComposerRuntime,
-  useThread,
-  useThreadRuntime,
+  useAui,
+  useAuiState,
 } from "@assistant-ui/react";
 import {
   BarChart3,
@@ -52,7 +51,8 @@ const suggestions = [
   {
     label: "Weather",
     icon: SunMedium,
-    prompt: "帮我查询今天的天气，并给出适合出门的建议。",
+    prompt: "What's the weather in San Francisco?",
+    agent: "weather",
   },
   {
     label: "Code",
@@ -131,7 +131,7 @@ function TopNav() {
 }
 
 function ChatWorkspaceContent() {
-  const threadRuntime = useThreadRuntime();
+  const aui = useAui();
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -168,30 +168,32 @@ function ChatWorkspaceContent() {
 
     switchingRef.current = true;
     const repository = loadRepository(activeThreadId);
+    const thread = aui.thread();
 
     if (repository) {
-      threadRuntime.import(repository);
+      thread.import(repository);
     } else {
-      threadRuntime.reset();
+      thread.reset();
     }
 
     queueMicrotask(() => {
       switchingRef.current = false;
     });
-  }, [activeThreadId, hydrated, threadRuntime]);
+  }, [activeThreadId, hydrated, aui]);
 
   useEffect(() => {
     if (!hydrated || !activeThreadId) {
       return;
     }
 
-    return threadRuntime.subscribe(() => {
+    return aui.subscribe(() => {
       if (switchingRef.current) {
         return;
       }
 
-      const repository = threadRuntime.export();
-      const state = threadRuntime.getState();
+      const thread = aui.thread();
+      const repository = thread.export();
+      const state = thread.getState();
       saveRepository(activeThreadId, repository);
 
       const nextTitle = getThreadTitle(state.messages);
@@ -209,7 +211,7 @@ function ChatWorkspaceContent() {
         return nextThreads;
       });
     });
-  }, [activeThreadId, hydrated, threadRuntime]);
+  }, [activeThreadId, hydrated, aui]);
 
   const activeThread = useMemo(
     () => threads.find((thread) => thread.id === activeThreadId),
@@ -221,8 +223,8 @@ function ChatWorkspaceContent() {
       return;
     }
 
-    saveRepository(activeThreadId, threadRuntime.export());
-  }, [activeThreadId, threadRuntime]);
+    saveRepository(activeThreadId, aui.thread().export());
+  }, [activeThreadId, aui]);
 
   const handleNewThread = useCallback(() => {
     persistCurrentThread();
@@ -318,7 +320,7 @@ function ChatWorkspaceContent() {
 }
 
 function Thread() {
-  const isEmpty = useThread((state) => state.messages.length === 0);
+  const isEmpty = useAuiState((state) => state.thread.messages.length === 0);
 
   return (
     <ThreadPrimitive.Root className="relative flex min-h-0 flex-1 flex-col">
@@ -357,7 +359,7 @@ function EmptyState() {
 }
 
 function PromptComposer() {
-  const isRunning = useThread((state) => state.isRunning);
+  const isRunning = useAuiState((state) => state.thread.isRunning);
 
   return (
     <ComposerPrimitive.Root className="w-full rounded-[25px] border border-[#e5e5e5] bg-white px-5 py-4 shadow-[0_2px_12px_rgba(0,0,0,0.08)]">
@@ -406,15 +408,31 @@ function PromptComposer() {
 }
 
 function SuggestionBar() {
-  const composer = useComposerRuntime();
+  const aui = useAui();
+  const isRunning = useAuiState((state) => state.thread.isRunning);
 
   return (
     <div className="mt-6 flex flex-wrap justify-center gap-3">
-      {suggestions.map(({ label, icon: Icon, prompt }) => (
+      {suggestions.map(({ label, icon: Icon, prompt, agent }) => (
         <button
           key={label}
-          className="flex h-10 items-center gap-2 rounded-full border border-[#ececec] bg-white px-4 text-[14px] font-medium text-[#242424] shadow-[0_1px_4px_rgba(0,0,0,0.03)] transition-colors hover:bg-[#f7f7f7]"
-          onClick={() => composer.setText(prompt)}
+          className="flex h-10 items-center gap-2 rounded-full border border-[#ececec] bg-white px-4 text-[14px] font-medium text-[#242424] shadow-[0_1px_4px_rgba(0,0,0,0.03)] transition-colors hover:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={isRunning}
+          onClick={() => {
+            if (agent === "weather") {
+              aui.thread().append({
+                content: [{ type: "text", text: prompt }],
+                runConfig: {
+                  custom: {
+                    agent: "weather",
+                  },
+                },
+              });
+              return;
+            }
+
+            aui.composer().setText(prompt);
+          }}
           type="button"
         >
           <Icon size={17} />

@@ -28,6 +28,8 @@ export function ChatRuntimeProvider({ children }: PropsWithChildren) {
               typeof runConfig.custom?.model === "string"
                 ? runConfig.custom.model
                 : undefined,
+            agent:
+              runConfig.custom?.agent === "weather" ? "weather" : undefined,
             threadId: unstable_threadId,
           }),
           signal: abortSignal,
