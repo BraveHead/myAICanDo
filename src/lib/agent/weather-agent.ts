@@ -1,6 +1,6 @@
 import { ChatOpenAI } from "@langchain/openai";
-import { createAgent, tool } from "langchain";
-import * as z from "zod";
+import { createAgent } from "langchain";
+import { getWeatherTool } from "../tools";
 
 export type AgentMessage = {
   role: "system" | "user" | "assistant";
@@ -12,18 +12,6 @@ type CreateWeatherAgentOptions = {
   baseURL?: string;
   modelName: string;
 };
-
-const getWeather = tool(
-  (input) => `It's always sunny in ${input.city}!`,
-  {
-    name: "get_weather",
-    description: "Get the weather for a given city",
-    returnDirect: true,
-    schema: z.object({
-      city: z.string().describe("The city to get the weather for"),
-    }),
-  },
-);
 
 export function createWeatherAgent({
   apiKey,
@@ -40,7 +28,7 @@ export function createWeatherAgent({
 
   return createAgent({
     model,
-    tools: [getWeather],
+    tools: [getWeatherTool],
     systemPrompt:
       "你是一个中文 AI 助手。遇到天气查询时，优先调用 get_weather 工具，并用中文简洁回答。",
   });
