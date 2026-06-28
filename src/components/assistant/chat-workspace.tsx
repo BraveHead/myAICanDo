@@ -37,6 +37,7 @@ import {
   saveThreads,
   type StoredThread,
 } from "@/lib/thread-storage";
+import type { SupportedAgent } from "@/lib/agent/agent-ids";
 
 const tabs = [
   "Base",
@@ -47,8 +48,6 @@ const tabs = [
   "Perplexity",
   "Explore More ->",
 ];
-
-type SupportedAgent = "weather" | "literary";
 
 type Suggestion = {
   label: string;

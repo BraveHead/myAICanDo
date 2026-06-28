@@ -7,13 +7,15 @@ import {
   type ThreadMessage,
 } from "@assistant-ui/react";
 import { type PropsWithChildren, useMemo } from "react";
+import {
+  isSupportedAgent,
+  type SupportedAgent,
+} from "@/lib/agent/agent-ids";
 
 type ApiMessage = {
   role: "system" | "user" | "assistant";
   content: string;
 };
-
-type SupportedAgent = "weather" | "literary";
 
 export function ChatRuntimeProvider({ children }: PropsWithChildren) {
   const adapter = useMemo<ChatModelAdapter>(
@@ -81,7 +83,7 @@ export function ChatRuntimeProvider({ children }: PropsWithChildren) {
 }
 
 function getSupportedAgent(agent: unknown): SupportedAgent | undefined {
-  if (agent === "weather" || agent === "literary") {
+  if (isSupportedAgent(agent)) {
     return agent;
   }
 

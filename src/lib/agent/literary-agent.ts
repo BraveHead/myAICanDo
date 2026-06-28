@@ -1,10 +1,5 @@
-import { createAgent } from "langchain";
 import { fetchTextFromUrlTool } from "../tools";
-import {
-  createProjectChatModel,
-  type CreateProjectChatModelOptions,
-} from "./chat-model";
-import type { AgentMessage } from "./weather-agent";
+import type { AgentDefinition } from "./agent-definition";
 
 const SYSTEM_PROMPT = `你是一个文学数据助手。
 
@@ -22,75 +17,17 @@ const SYSTEM_PROMPT = `你是一个文学数据助手。
 - 行统计类回答要包含 how_you_computed_counts，说明数据来自工具返回的 lineStats。
 - 默认用中文回答。`;
 
-type CreateLiteraryAgentOptions = Pick<
-  CreateProjectChatModelOptions,
-  "apiKey" | "baseURL" | "modelName"
->;
-
-export function createLiteraryAgent({
-  apiKey,
-  baseURL,
-  modelName,
-}: CreateLiteraryAgentOptions) {
-  const model = createProjectChatModel({
-    apiKey,
-    baseURL,
-    modelName,
+export const literaryAgentDefinition = {
+  id: "literary",
+  systemPrompt: SYSTEM_PROMPT,
+  tools: [fetchTextFromUrlTool],
+  modelOptions: {
     temperature: 0.3,
     timeout: 600_000,
-  });
-
-  return createAgent({
-    model,
-    tools: [fetchTextFromUrlTool],
-    systemPrompt: SYSTEM_PROMPT,
-  });
-}
-
-export async function* streamLiteraryAgentText({
-  agent,
-  messages,
-  signal,
-}: {
-  agent: ReturnType<typeof createLiteraryAgent>;
-  messages: AgentMessage[];
-  signal: AbortSignal;
-}) {
-  const result = await agent.invoke(
-    { messages },
-    {
-      signal,
-      recursionLimit: 10,
-    },
-  );
-  const lastMessage = result.messages.at(-1);
-  const text = normalizeMessageContent(lastMessage?.content);
-
-  if (text) {
-    yield text;
-  }
-}
-
-function normalizeMessageContent(content: unknown) {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  return content
-    .map((part) => {
-      if (typeof part === "string") {
-        return part;
-      }
-
-      if (part && typeof part === "object" && "text" in part) {
-        return String(part.text ?? "");
-      }
-
-      return "";
-    })
-    .join("");
-}
+  },
+  recursionLimit: 10,
+  match: (content) =>
+    content.includes("gutenberg.org/files/64317/64317-0.txt") &&
+    content.includes("Gatsby") &&
+    content.includes("Daisy"),
+} satisfies AgentDefinition;
