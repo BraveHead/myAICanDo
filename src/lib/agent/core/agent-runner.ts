@@ -1,4 +1,5 @@
 import { createAgent } from "langchain";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import {
   createProjectChatModel,
   type CreateProjectChatModelOptions,
@@ -12,6 +13,7 @@ import type {
 type StreamConfiguredAgentTextOptions = CreateConfiguredAgentOptions & {
   definition: AgentDefinition;
   messages: AgentMessage[];
+  runConfig?: RunnableConfig;
   signal: AbortSignal;
 };
 
@@ -38,6 +40,7 @@ export function createConfiguredAgent(
 export async function* streamConfiguredAgentText({
   definition,
   messages,
+  runConfig,
   signal,
   ...modelOptions
 }: StreamConfiguredAgentTextOptions) {
@@ -45,6 +48,7 @@ export async function* streamConfiguredAgentText({
   const result = await agent.invoke(
     { messages },
     {
+      ...runConfig,
       signal,
       recursionLimit: definition.recursionLimit ?? 8,
     },

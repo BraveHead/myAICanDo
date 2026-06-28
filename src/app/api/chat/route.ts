@@ -1,8 +1,10 @@
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { createProjectChatModel } from "@/lib/agent/core/chat-model";
 import type { AgentMessage } from "@/lib/agent/core/agent-definition";
 import { resolveAgentDefinition } from "@/lib/agent/core/agent-registry";
 import { streamConfiguredAgentText } from "@/lib/agent/core/agent-runner";
+import { createLangSmithRunConfig } from "@/lib/agent/core/langsmith-tracing";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
 
 type ChatRequestMessage = {
@@ -89,6 +91,11 @@ export async function POST(request: Request) {
           agent: body.agent,
           messages: agentMessages,
         });
+        const runConfig = createLangSmithRunConfig({
+          agent: agentDefinition?.id,
+          modelName,
+          threadId: body.threadId,
+        });
         const chunks =
           agentDefinition !== undefined
             ? streamConfiguredAgentText({
@@ -97,6 +104,7 @@ export async function POST(request: Request) {
                 baseURL,
                 modelName,
                 messages: agentMessages,
+                runConfig,
                 signal: request.signal,
               })
             : streamChatModelText({
@@ -106,6 +114,7 @@ export async function POST(request: Request) {
                   modelName,
                 }),
                 messages: langChainMessages,
+                runConfig,
                 signal: request.signal,
               });
 
@@ -135,13 +144,15 @@ export async function POST(request: Request) {
 async function* streamChatModelText({
   model,
   messages,
+  runConfig,
   signal,
 }: {
   model: ReturnType<typeof createProjectChatModel>;
   messages: Array<SystemMessage | AIMessage | HumanMessage>;
+  runConfig: RunnableConfig;
   signal: AbortSignal;
 }) {
-  const chunks = await model.stream(messages, { signal });
+  const chunks = await model.stream(messages, { ...runConfig, signal });
 
   for await (const chunk of chunks) {
     const text = normalizeChunkContent(chunk.content);
