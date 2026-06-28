@@ -1,10 +1,16 @@
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
-import { ChatOpenAI } from "@langchain/openai";
+import {
+  createLiteraryAgent,
+  streamLiteraryAgentText,
+} from "@/lib/agent/literary-agent";
 import {
   createWeatherAgent,
   streamWeatherAgentText,
   type AgentMessage,
 } from "@/lib/agent/weather-agent";
+import { createProjectChatModel } from "@/lib/agent/chat-model";
+
+type SupportedAgent = "weather" | "literary";
 
 type ChatRequestMessage = {
   role: "system" | "user" | "assistant";
@@ -15,7 +21,7 @@ type ChatRequestBody = {
   messages?: ChatRequestMessage[];
   model?: string;
   threadId?: string;
-  agent?: "weather";
+  agent?: SupportedAgent;
 };
 
 export const runtime = "nodejs";
@@ -86,8 +92,9 @@ export async function POST(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
+        const agent = resolveAgent(body, messages);
         const chunks =
-          isWeatherAgentRequest(body, messages)
+          agent === "weather"
             ? streamWeatherAgentText({
                 agent: createWeatherAgent({
                   apiKey,
@@ -97,15 +104,25 @@ export async function POST(request: Request) {
                 messages: agentMessages,
                 signal: request.signal,
               })
-            : streamChatModelText({
-                model: createChatModel({
-                  apiKey,
-                  baseURL,
-                  modelName,
-                }),
-                messages: langChainMessages,
-                signal: request.signal,
-              });
+            : agent === "literary"
+              ? streamLiteraryAgentText({
+                  agent: createLiteraryAgent({
+                    apiKey,
+                    baseURL,
+                    modelName,
+                  }),
+                  messages: agentMessages,
+                  signal: request.signal,
+                })
+              : streamChatModelText({
+                  model: createProjectChatModel({
+                    apiKey,
+                    baseURL,
+                    modelName,
+                  }),
+                  messages: langChainMessages,
+                  signal: request.signal,
+                });
 
         for await (const chunk of chunks) {
           controller.enqueue(encoder.encode(chunk));
@@ -130,34 +147,30 @@ export async function POST(request: Request) {
   });
 }
 
-function isWeatherAgentRequest(
+function resolveAgent(
   body: ChatRequestBody,
   messages: ChatRequestMessage[],
-) {
+): SupportedAgent | undefined {
   const lastMessage = messages.at(-1);
+  const content = lastMessage?.content.trim() ?? "";
 
-  return (
+  if (
     body.agent === "weather" ||
-    lastMessage?.content.trim() === "What's the weather in San Francisco?"
-  );
-}
+    content === "What's the weather in San Francisco?"
+  ) {
+    return "weather";
+  }
 
-function createChatModel({
-  apiKey,
-  baseURL,
-  modelName,
-}: {
-  apiKey: string;
-  baseURL?: string;
-  modelName: string;
-}) {
-  return new ChatOpenAI({
-    apiKey,
-    model: modelName,
-    temperature: 0.3,
-    streamUsage: false,
-    configuration: baseURL ? { baseURL } : undefined,
-  });
+  if (
+    body.agent === "literary" ||
+    (content.includes("gutenberg.org/files/64317/64317-0.txt") &&
+      content.includes("Gatsby") &&
+      content.includes("Daisy"))
+  ) {
+    return "literary";
+  }
+
+  return undefined;
 }
 
 async function* streamChatModelText({
@@ -165,7 +178,7 @@ async function* streamChatModelText({
   messages,
   signal,
 }: {
-  model: ChatOpenAI;
+  model: ReturnType<typeof createProjectChatModel>;
   messages: Array<SystemMessage | AIMessage | HumanMessage>;
   signal: AbortSignal;
 }) {

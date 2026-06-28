@@ -13,6 +13,8 @@ type ApiMessage = {
   content: string;
 };
 
+type SupportedAgent = "weather" | "literary";
+
 export function ChatRuntimeProvider({ children }: PropsWithChildren) {
   const adapter = useMemo<ChatModelAdapter>(
     () => ({
@@ -28,8 +30,7 @@ export function ChatRuntimeProvider({ children }: PropsWithChildren) {
               typeof runConfig.custom?.model === "string"
                 ? runConfig.custom.model
                 : undefined,
-            agent:
-              runConfig.custom?.agent === "weather" ? "weather" : undefined,
+            agent: getSupportedAgent(runConfig.custom?.agent),
             threadId: unstable_threadId,
           }),
           signal: abortSignal,
@@ -77,6 +78,14 @@ export function ChatRuntimeProvider({ children }: PropsWithChildren) {
       {children}
     </AssistantRuntimeProvider>
   );
+}
+
+function getSupportedAgent(agent: unknown): SupportedAgent | undefined {
+  if (agent === "weather" || agent === "literary") {
+    return agent;
+  }
+
+  return undefined;
 }
 
 function toApiMessage(message: ThreadMessage): ApiMessage | null {

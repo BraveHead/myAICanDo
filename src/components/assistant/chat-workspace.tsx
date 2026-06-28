@@ -10,6 +10,7 @@ import {
 } from "@assistant-ui/react";
 import {
   BarChart3,
+  BookOpen,
   Bot,
   Code2,
   Compass,
@@ -47,12 +48,38 @@ const tabs = [
   "Explore More ->",
 ];
 
-const suggestions = [
+type SupportedAgent = "weather" | "literary";
+
+type Suggestion = {
+  label: string;
+  icon: typeof SunMedium;
+  prompt: string;
+  agent?: SupportedAgent;
+};
+
+const gatsbyPrompt = `Project Gutenberg hosts a full plain-text copy of F. Scott Fitzgerald's The Great Gatsby.
+URL: https://www.gutenberg.org/files/64317/64317-0.txt
+
+Answer as much as you can:
+
+1) How many lines in the complete Gutenberg file contain the substring \`Gatsby\` (count lines, not occurrences within a line, each line ends with a line break).
+2) The 1-based line number of the first line in the file that contains \`Daisy\`.
+3) A two-sentence neutral synopsis.
+
+Do your best on (1) and (2). If at any point you realize you cannot verify an exact answer with your available tools and reasoning, do not fabricate numbers: use \`null\` for that field and spell out the limitation in \`how_you_computed_counts\`. If you encounter any errors please report what the error was and what the error message was.`;
+
+const suggestions: Suggestion[] = [
   {
     label: "Weather",
     icon: SunMedium,
     prompt: "What's the weather in San Francisco?",
     agent: "weather",
+  },
+  {
+    label: "Gatsby",
+    icon: BookOpen,
+    prompt: gatsbyPrompt,
+    agent: "literary",
   },
   {
     label: "Code",
@@ -424,12 +451,12 @@ function SuggestionBar() {
           className="flex h-10 items-center gap-2 rounded-full border border-[#ececec] bg-white px-4 text-[14px] font-medium text-[#242424] shadow-[0_1px_4px_rgba(0,0,0,0.03)] transition-colors hover:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:opacity-50"
           disabled={isRunning}
           onClick={() => {
-            if (agent === "weather") {
+            if (agent) {
               aui.thread().append({
                 content: [{ type: "text", text: prompt }],
                 runConfig: {
                   custom: {
-                    agent: "weather",
+                    agent,
                   },
                 },
               });

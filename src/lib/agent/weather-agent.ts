@@ -1,6 +1,6 @@
-import { ChatOpenAI } from "@langchain/openai";
 import { createAgent } from "langchain";
 import { getWeatherTool } from "../tools";
+import { createProjectChatModel } from "./chat-model";
 
 export type AgentMessage = {
   role: "system" | "user" | "assistant";
@@ -18,12 +18,11 @@ export function createWeatherAgent({
   baseURL,
   modelName,
 }: CreateWeatherAgentOptions) {
-  const model = new ChatOpenAI({
+  const model = createProjectChatModel({
     apiKey,
-    model: modelName,
+    baseURL,
+    modelName,
     temperature: 0.3,
-    streamUsage: false,
-    configuration: baseURL ? { baseURL } : undefined,
   });
 
   return createAgent({
