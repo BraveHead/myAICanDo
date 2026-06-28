@@ -10,7 +10,7 @@ import { type PropsWithChildren, useMemo } from "react";
 import {
   isSupportedAgent,
   type SupportedAgent,
-} from "@/lib/agent/agent-ids";
+} from "@/lib/agent/shared/agent-ids";
 
 type ApiMessage = {
   role: "system" | "user" | "assistant";

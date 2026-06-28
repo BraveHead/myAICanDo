@@ -37,7 +37,7 @@ import {
   saveThreads,
   type StoredThread,
 } from "@/lib/thread-storage";
-import type { SupportedAgent } from "@/lib/agent/agent-ids";
+import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
 
 const tabs = [
   "Base",

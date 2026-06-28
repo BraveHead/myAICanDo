@@ -2,10 +2,10 @@ import {
   isSupportedAgent,
   supportedAgentIds,
   type SupportedAgent,
-} from "./agent-ids";
+} from "../shared/agent-ids";
 import type { AgentDefinition, AgentMessage } from "./agent-definition";
-import { literaryAgentDefinition } from "./literary-agent";
-import { weatherAgentDefinition } from "./weather-agent";
+import { literaryAgentDefinition } from "../definitions/literary";
+import { weatherAgentDefinition } from "../definitions/weather";
 
 const agentDefinitions = {
   weather: weatherAgentDefinition,

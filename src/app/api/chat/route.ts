@@ -1,9 +1,9 @@
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
-import { createProjectChatModel } from "@/lib/agent/chat-model";
-import type { AgentMessage } from "@/lib/agent/agent-definition";
-import { resolveAgentDefinition } from "@/lib/agent/agent-registry";
-import { streamConfiguredAgentText } from "@/lib/agent/agent-runner";
-import type { SupportedAgent } from "@/lib/agent/agent-ids";
+import { createProjectChatModel } from "@/lib/agent/core/chat-model";
+import type { AgentMessage } from "@/lib/agent/core/agent-definition";
+import { resolveAgentDefinition } from "@/lib/agent/core/agent-registry";
+import { streamConfiguredAgentText } from "@/lib/agent/core/agent-runner";
+import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
 
 type ChatRequestMessage = {
   role: "system" | "user" | "assistant";

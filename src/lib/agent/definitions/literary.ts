@@ -1,5 +1,5 @@
-import { fetchTextFromUrlTool } from "../tools";
-import type { AgentDefinition } from "./agent-definition";
+import { fetchTextFromUrlTool } from "../../tools";
+import type { AgentDefinition } from "../core/agent-definition";
 
 const SYSTEM_PROMPT = `你是一个文学数据助手。
 

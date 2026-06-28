@@ -1,6 +1,6 @@
 import type { ClientTool, ServerTool } from "@langchain/core/tools";
 import type { CreateProjectChatModelOptions } from "./chat-model";
-import type { SupportedAgent } from "./agent-ids";
+import type { SupportedAgent } from "../shared/agent-ids";
 
 export type AgentMessage = {
   role: "system" | "user" | "assistant";
