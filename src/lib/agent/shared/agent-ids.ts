@@ -1,4 +1,4 @@
-export const supportedAgentIds = ["weather", "literary"] as const;
+export const supportedAgentIds = ["weather", "literary", "demo"] as const;
 
 export type SupportedAgent = (typeof supportedAgentIds)[number];
 

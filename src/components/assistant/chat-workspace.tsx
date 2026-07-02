@@ -37,7 +37,6 @@ import {
   type StoredThread,
 } from "@/lib/thread-storage";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
-import { DemoAgentTrigger } from "./demo-agent-trigger";
 
 type Suggestion = {
   label: string;
@@ -58,6 +57,12 @@ Answer as much as you can:
 Do your best on (1) and (2). If at any point you realize you cannot verify an exact answer with your available tools and reasoning, do not fabricate numbers: use \`null\` for that field and spell out the limitation in \`how_you_computed_counts\`. If you encounter any errors please report what the error was and what the error message was.`;
 
 const suggestions: Suggestion[] = [
+  {
+    label: "Demo",
+    icon: Bot,
+    prompt: "现在几点了？请顺带自我介绍一句。",
+    agent: "demo",
+  },
   {
     label: "Weather",
     icon: SunMedium,
@@ -335,7 +340,6 @@ function EmptyState() {
       </h2>
       <PromptComposer />
       <SuggestionBar />
-      <DemoAgentTrigger />
     </div>
   );
 }

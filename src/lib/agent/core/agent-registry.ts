@@ -4,12 +4,14 @@ import {
   type SupportedAgent,
 } from "../shared/agent-ids";
 import type { AgentDefinition, AgentMessage } from "./agent-definition";
+import { demoAgentDefinition } from "../definitions/demo";
 import { literaryAgentDefinition } from "../definitions/literary";
 import { weatherAgentDefinition } from "../definitions/weather";
 
 const agentDefinitions = {
   weather: weatherAgentDefinition,
   literary: literaryAgentDefinition,
+  demo: demoAgentDefinition,
 } satisfies Record<SupportedAgent, AgentDefinition>;
 
 export function getAgentDefinition(agent: unknown) {
