@@ -11,6 +11,7 @@ import {
   isSupportedAgent,
   type SupportedAgent,
 } from "@/lib/agent/shared/agent-ids";
+import { loadActiveThreadId } from "@/lib/thread-storage";
 
 type ApiMessage = {
   role: "system" | "user" | "assistant";
@@ -21,19 +22,26 @@ export function ChatRuntimeProvider({ children }: PropsWithChildren) {
   const adapter = useMemo<ChatModelAdapter>(
     () => ({
       async *run({ messages, abortSignal, unstable_threadId, runConfig }) {
+        const apiMessages = messages.map(toApiMessage).filter(isApiMessage);
+        const latestMessage = getLatestMessage(apiMessages);
+
+        if (!latestMessage) {
+          throw new Error("没有可发送的用户消息。");
+        }
+
         const response = await fetch("/api/chat", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            messages: messages.map(toApiMessage).filter(Boolean),
+            message: latestMessage,
             model:
               typeof runConfig.custom?.model === "string"
                 ? runConfig.custom.model
                 : undefined,
             agent: getSupportedAgent(runConfig.custom?.agent),
-            threadId: unstable_threadId,
+            threadId: loadActiveThreadId() ?? unstable_threadId,
           }),
           signal: abortSignal,
         });
@@ -88,6 +96,16 @@ function getSupportedAgent(agent: unknown): SupportedAgent | undefined {
   }
 
   return undefined;
+}
+
+function getLatestMessage(messages: ApiMessage[]) {
+  return (
+    messages.findLast((message) => message.role === "user") ?? messages.at(-1)
+  );
+}
+
+function isApiMessage(message: ApiMessage | null): message is ApiMessage {
+  return message !== null;
 }
 
 function toApiMessage(message: ThreadMessage): ApiMessage | null {

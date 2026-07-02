@@ -1,5 +1,7 @@
 import { ChatOpenAI } from "@langchain/openai";
 
+export const DEFAULT_MODEL_TIMEOUT = 60_000;
+
 export type CreateProjectChatModelOptions = {
   apiKey: string;
   baseURL?: string;
@@ -19,7 +21,7 @@ export function createProjectChatModel({
     apiKey,
     model: modelName,
     temperature,
-    timeout,
+    timeout: timeout ?? DEFAULT_MODEL_TIMEOUT,
     streamUsage: false,
     configuration: baseURL ? { baseURL } : undefined,
   });

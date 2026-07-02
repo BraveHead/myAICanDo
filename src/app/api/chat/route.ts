@@ -6,6 +6,13 @@ import { resolveAgentDefinition } from "@/lib/agent/core/agent-registry";
 import { streamConfiguredAgentText } from "@/lib/agent/core/agent-runner";
 import { createLangSmithRunConfig } from "@/lib/agent/core/langsmith-tracing";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
+import {
+  getThreadAgent,
+  loadThreadAgentMessages,
+  mergeAgentMessages,
+  saveThreadAgent,
+  touchThreadFromMessages,
+} from "@/lib/server/thread-store";
 
 type ChatRequestMessage = {
   role: "system" | "user" | "assistant";
@@ -13,6 +20,7 @@ type ChatRequestMessage = {
 };
 
 type ChatRequestBody = {
+  message?: ChatRequestMessage;
   messages?: ChatRequestMessage[];
   model?: string;
   threadId?: string;
@@ -21,6 +29,8 @@ type ChatRequestBody = {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const threadAgentSelections = new Map<string, SupportedAgent>();
 
 export async function POST(request: Request) {
   let body: ChatRequestBody;
@@ -39,7 +49,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const messages = getRequestMessages(body);
   if (messages.length === 0) {
     return Response.json(
       {
@@ -67,34 +77,35 @@ export async function POST(request: Request) {
 
   const modelName = body.model || process.env.OPENAI_MODEL || "gpt-4o-mini";
   const baseURL = process.env.OPENAI_BASE_URL || undefined;
+  const threadId = resolveThreadId(body.threadId);
 
   const encoder = new TextEncoder();
   const agentMessages: AgentMessage[] = messages.map((message) => ({
     role: message.role,
     content: message.content,
   }));
-  const langChainMessages = messages.map((message) => {
-    if (message.role === "system") {
-      return new SystemMessage(message.content);
-    }
+  await touchThreadFromMessages(threadId, agentMessages);
 
-    if (message.role === "assistant") {
-      return new AIMessage(message.content);
-    }
-
-    return new HumanMessage(message.content);
-  });
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
+        const persistedAgent = await getThreadAgent(threadId);
         const agentDefinition = resolveAgentDefinition({
-          agent: body.agent,
+          agent:
+            body.agent ??
+            persistedAgent ??
+            threadAgentSelections.get(threadId),
           messages: agentMessages,
         });
+        if (agentDefinition) {
+          threadAgentSelections.set(threadId, agentDefinition.id);
+          await saveThreadAgent(threadId, agentDefinition.id);
+        }
+
         const runConfig = createLangSmithRunConfig({
           agent: agentDefinition?.id,
           modelName,
-          threadId: body.threadId,
+          threadId,
         });
         const chunks =
           agentDefinition !== undefined
@@ -106,6 +117,7 @@ export async function POST(request: Request) {
                 messages: agentMessages,
                 runConfig,
                 signal: request.signal,
+                threadId,
               })
             : streamChatModelText({
                 model: createProjectChatModel({
@@ -113,7 +125,11 @@ export async function POST(request: Request) {
                   baseURL,
                   modelName,
                 }),
-                messages: langChainMessages,
+                messages: await getModelMessages({
+                  requestMessages: agentMessages,
+                  threadId,
+                  usesFullHistory: Array.isArray(body.messages),
+                }),
                 runConfig,
                 signal: request.signal,
               });
@@ -124,7 +140,8 @@ export async function POST(request: Request) {
 
         controller.close();
       } catch (error) {
-        controller.error(error);
+        controller.enqueue(encoder.encode(formatStreamError(error)));
+        controller.close();
       }
     },
     cancel() {
@@ -136,9 +153,41 @@ export async function POST(request: Request) {
     headers: {
       "Cache-Control": "no-store",
       "Content-Type": "text/plain; charset=utf-8",
-      "X-Thread-Id": body.threadId ?? "",
+      "X-Thread-Id": threadId,
     },
   });
+}
+
+function getRequestMessages(body: ChatRequestBody) {
+  if (Array.isArray(body.messages) && body.messages.length > 0) {
+    return body.messages;
+  }
+
+  return body.message ? [body.message] : [];
+}
+
+function resolveThreadId(threadId: string | undefined) {
+  const normalizedThreadId = threadId?.trim();
+  return normalizedThreadId || crypto.randomUUID();
+}
+
+function formatStreamError(error: unknown) {
+  if (isAbortError(error)) {
+    return "请求已取消。";
+  }
+
+  if (error instanceof Error && error.message) {
+    return `模型响应失败：${error.message}`;
+  }
+
+  return "模型响应失败，请检查本地模型配置或稍后重试。";
+}
+
+function isAbortError(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.message.includes("aborted"))
+  );
 }
 
 async function* streamChatModelText({
@@ -160,6 +209,32 @@ async function* streamChatModelText({
       yield text;
     }
   }
+}
+
+async function getModelMessages({
+  requestMessages,
+  threadId,
+  usesFullHistory,
+}: {
+  requestMessages: AgentMessage[];
+  threadId: string;
+  usesFullHistory: boolean;
+}) {
+  const messages = usesFullHistory
+    ? requestMessages
+    : mergeAgentMessages(await loadThreadAgentMessages(threadId), requestMessages);
+
+  return messages.map((message) => {
+    if (message.role === "system") {
+      return new SystemMessage(message.content);
+    }
+
+    if (message.role === "assistant") {
+      return new AIMessage(message.content);
+    }
+
+    return new HumanMessage(message.content);
+  });
 }
 
 function normalizeChunkContent(content: unknown) {

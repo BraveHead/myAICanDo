@@ -1,12 +1,7 @@
 import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/react";
+import type { StoredThread } from "@/lib/thread-types";
 
-export type StoredThread = {
-  id: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-  status: "regular";
-};
+export type { StoredThread } from "@/lib/thread-types";
 
 const THREADS_KEY = "myAICanDo:threads:v1";
 const ACTIVE_THREAD_KEY = "myAICanDo:active-thread:v1";
@@ -53,6 +48,37 @@ export function saveThreads(threads: StoredThread[]) {
   localStorage.setItem(THREADS_KEY, JSON.stringify(threads));
 }
 
+export async function loadThreadsFromServer() {
+  try {
+    const response = await fetch("/api/threads", {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = (await response.json()) as { threads?: StoredThread[] };
+    return Array.isArray(data.threads) ? data.threads : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveThreadsToServer(threads: StoredThread[]) {
+  try {
+    await fetch("/api/threads", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ threads }),
+      keepalive: true,
+    });
+  } catch {
+    // localStorage remains the offline fallback.
+  }
+}
+
 export function loadActiveThreadId() {
   if (!isBrowser()) {
     return null;
@@ -95,6 +121,47 @@ export function saveRepository(
   }
 
   localStorage.setItem(repositoryKey(threadId), JSON.stringify(repository));
+}
+
+export async function loadRepositoryFromServer(threadId: string) {
+  try {
+    const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = (await response.json()) as {
+      repository?: ExportedMessageRepository | null;
+    };
+    return data.repository ? reviveRepository(data.repository) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveRepositoryToServer({
+  repository,
+  thread,
+  threadId,
+}: {
+  repository: ExportedMessageRepository;
+  thread?: StoredThread;
+  threadId: string;
+}) {
+  try {
+    await fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ repository, thread }),
+      keepalive: true,
+    });
+  } catch {
+    // localStorage remains the offline fallback.
+  }
 }
 
 export function getThreadTitle(messages: readonly ThreadMessage[]) {

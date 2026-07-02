@@ -30,10 +30,14 @@ import {
   getThreadTitle,
   loadActiveThreadId,
   loadRepository,
+  loadRepositoryFromServer,
+  loadThreadsFromServer,
   loadThreads,
   saveActiveThreadId,
   saveRepository,
+  saveRepositoryToServer,
   saveThreads,
+  saveThreadsToServer,
   type StoredThread,
 } from "@/lib/thread-storage";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
@@ -117,6 +121,7 @@ function ChatWorkspaceContent() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const switchingRef = useRef(false);
+  const serverSyncedRef = useRef(false);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -143,10 +148,50 @@ function ChatWorkspaceContent() {
   }, []);
 
   useEffect(() => {
+    if (!hydrated || serverSyncedRef.current) {
+      return;
+    }
+
+    serverSyncedRef.current = true;
+
+    let cancelled = false;
+    void (async () => {
+      const serverThreads = await loadThreadsFromServer();
+      if (cancelled) {
+        return;
+      }
+
+      if (serverThreads.length === 0) {
+        await saveThreadsToServer(threads);
+        return;
+      }
+
+      setThreads(serverThreads);
+      saveThreads(serverThreads);
+
+      const nextActiveThreadId =
+        activeThreadId &&
+        serverThreads.some((thread) => thread.id === activeThreadId)
+          ? activeThreadId
+          : serverThreads[0]?.id;
+
+      if (nextActiveThreadId) {
+        setActiveThreadId(nextActiveThreadId);
+        saveActiveThreadId(nextActiveThreadId);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeThreadId, hydrated, threads]);
+
+  useEffect(() => {
     if (!hydrated || !activeThreadId) {
       return;
     }
 
+    let cancelled = false;
     switchingRef.current = true;
     const repository = loadRepository(activeThreadId);
     const thread = aui.thread();
@@ -160,6 +205,24 @@ function ChatWorkspaceContent() {
     queueMicrotask(() => {
       switchingRef.current = false;
     });
+
+    void (async () => {
+      const serverRepository = await loadRepositoryFromServer(activeThreadId);
+      if (cancelled || !serverRepository) {
+        return;
+      }
+
+      switchingRef.current = true;
+      aui.thread().import(serverRepository);
+      saveRepository(activeThreadId, serverRepository);
+      queueMicrotask(() => {
+        switchingRef.current = false;
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeThreadId, hydrated, aui]);
 
   useEffect(() => {
@@ -189,6 +252,12 @@ function ChatWorkspaceContent() {
             : thread,
         );
         saveThreads(nextThreads);
+        void saveThreadsToServer(nextThreads);
+        void saveRepositoryToServer({
+          repository,
+          thread: nextThreads.find((thread) => thread.id === activeThreadId),
+          threadId: activeThreadId,
+        });
         return nextThreads;
       });
     });
@@ -214,6 +283,7 @@ function ChatWorkspaceContent() {
     setThreads((currentThreads) => {
       const nextThreads = [nextThread, ...currentThreads];
       saveThreads(nextThreads);
+      void saveThreadsToServer(nextThreads);
       return nextThreads;
     });
     setActiveThreadId(nextThread.id);
