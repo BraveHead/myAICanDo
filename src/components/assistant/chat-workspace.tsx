@@ -13,7 +13,6 @@ import {
   BookOpen,
   Bot,
   Code2,
-  Compass,
   Lightbulb,
   Mic,
   PanelLeft,
@@ -38,16 +37,6 @@ import {
   type StoredThread,
 } from "@/lib/thread-storage";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
-
-const tabs = [
-  "Base",
-  "ChatGPT",
-  "Claude",
-  "Grok",
-  "Gemini",
-  "Perplexity",
-  "Explore More ->",
-];
 
 type Suggestion = {
   label: string;
@@ -107,52 +96,12 @@ const modelLabel = process.env.NEXT_PUBLIC_MODEL_LABEL || "GPT-4o Mini";
 export function ChatWorkspace() {
   return (
     <main className="flex min-h-screen flex-col bg-white text-[#121212]">
-      <TopNav />
       <section className="flex min-h-0 flex-1 p-3 sm:p-4">
         <div className="flex min-h-[calc(100vh-96px)] w-full overflow-hidden rounded-[22px] border border-[#e6e6e6] bg-white shadow-[0_1px_10px_rgba(0,0,0,0.04)]">
           <ChatWorkspaceContent />
         </div>
       </section>
     </main>
-  );
-}
-
-function TopNav() {
-  return (
-    <header className="flex h-[58px] shrink-0 items-center justify-between border-b border-[#eeeeee] px-4 sm:px-7">
-      <nav className="flex min-w-0 items-center gap-3 overflow-x-auto">
-        {tabs.map((tab, index) => (
-          <button
-            key={tab}
-            className={`h-9 shrink-0 rounded-lg px-3 text-[15px] font-medium transition-colors ${
-              index === 0
-                ? "bg-[#f0f0f0] text-[#111111] shadow-[inset_0_-2px_0_#111111]"
-                : "text-[#242424] hover:bg-[#f6f6f6]"
-            }`}
-            type="button"
-          >
-            {tab}
-          </button>
-        ))}
-      </nav>
-
-      <div className="ml-4 flex shrink-0 items-center gap-3 text-[#777777]">
-        <button
-          className="grid size-8 place-items-center rounded-md hover:bg-[#f4f4f4]"
-          title="Open"
-          type="button"
-        >
-          <Compass size={17} />
-        </button>
-        <button
-          className="grid size-8 place-items-center rounded-md hover:bg-[#f4f4f4]"
-          title="Close"
-          type="button"
-        >
-          <X size={17} />
-        </button>
-      </div>
-    </header>
   );
 }
 
