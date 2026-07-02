@@ -37,6 +37,7 @@ import {
   type StoredThread,
 } from "@/lib/thread-storage";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
+import { DemoAgentTrigger } from "./demo-agent-trigger";
 
 type Suggestion = {
   label: string;
@@ -334,6 +335,7 @@ function EmptyState() {
       </h2>
       <PromptComposer />
       <SuggestionBar />
+      <DemoAgentTrigger />
     </div>
   );
 }
