@@ -1,10 +1,12 @@
 import {
+  createStoredThread,
   listStoredThreads,
   upsertStoredThreads,
 } from "@/lib/server/thread-store";
 import type { StoredThread } from "@/lib/thread-types";
 
 type ThreadsRequestBody = {
+  title?: string;
   threads?: StoredThread[];
 };
 
@@ -14,6 +16,20 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   return Response.json({
     threads: await listStoredThreads(),
+  });
+}
+
+export async function POST(request: Request) {
+  let body: ThreadsRequestBody = {};
+
+  try {
+    body = (await request.json()) as ThreadsRequestBody;
+  } catch {
+    body = {};
+  }
+
+  return Response.json({
+    thread: await createStoredThread(normalizeTitle(body.title)),
   });
 }
 
@@ -40,6 +56,15 @@ export async function PUT(request: Request) {
   await upsertStoredThreads(threads);
 
   return Response.json({ ok: true });
+}
+
+function normalizeTitle(title: unknown) {
+  if (typeof title !== "string") {
+    return "New Chat";
+  }
+
+  const normalizedTitle = title.replace(/\s+/g, " ").trim();
+  return normalizedTitle || "New Chat";
 }
 
 function isStoredThread(thread: unknown): thread is StoredThread {

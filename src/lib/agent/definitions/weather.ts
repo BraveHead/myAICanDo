@@ -1,5 +1,6 @@
 import { getWeatherTool } from "../../tools";
 import type { AgentDefinition } from "../core/agent-definition";
+import { structuredAgentResponseFormat } from "../shared/response-format";
 
 export const weatherAgentDefinition = {
   id: "weather",
@@ -9,6 +10,7 @@ export const weatherAgentDefinition = {
   modelOptions: {
     temperature: 0.3,
   },
+  responseFormat: structuredAgentResponseFormat,
   recursionLimit: 8,
   match: (content) => content === "What's the weather in San Francisco?",
 } satisfies AgentDefinition;

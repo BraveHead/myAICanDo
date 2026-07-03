@@ -1,7 +1,8 @@
-import { createAgent } from "langchain";
+import { createAgent, createMiddleware } from "langchain";
 import { MemorySaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import type { RunnableConfig } from "@langchain/core/runnables";
+import type { ChatStreamEvent } from "@/lib/chat-stream";
 import {
   DEFAULT_MODEL_TIMEOUT,
   createProjectChatModel,
@@ -21,6 +22,7 @@ import type {
 type StreamConfiguredAgentTextOptions = CreateConfiguredAgentOptions & {
   definition: AgentDefinition;
   messages: AgentMessage[];
+  onStreamEvent?: (event: ChatStreamEvent) => void;
   runConfig?: RunnableConfig;
   signal: AbortSignal;
   threadId?: string;
@@ -34,7 +36,14 @@ const initializedAgentThreads = new Set<string>();
 
 export async function createConfiguredAgent(
   definition: AgentDefinition,
-  { apiKey, baseURL, modelName }: CreateConfiguredAgentOptions,
+  {
+    apiKey,
+    baseURL,
+    modelName,
+    onStreamEvent,
+  }: CreateConfiguredAgentOptions & {
+    onStreamEvent?: (event: ChatStreamEvent) => void;
+  },
 ) {
   const modelOptions: CreateProjectChatModelOptions = {
     apiKey,
@@ -51,18 +60,32 @@ export async function createConfiguredAgent(
     tools: definition.tools,
     systemPrompt: definition.systemPrompt,
     checkpointer: agentCheckpointer,
+    ...(definition.responseFormat
+      ? { responseFormat: definition.responseFormat }
+      : {}),
+    ...(onStreamEvent
+      ? { middleware: [createToolCallStreamingMiddleware(onStreamEvent)] }
+      : {}),
   });
 }
 
-export async function* streamConfiguredAgentText({
+export async function* streamConfiguredAgentEvents({
   definition,
   messages,
+  onStreamEvent,
   runConfig,
   signal,
   threadId,
   ...modelOptions
 }: StreamConfiguredAgentTextOptions) {
-  const agent = await createConfiguredAgent(definition, modelOptions);
+  const queue = createAsyncQueue<ChatStreamEvent>();
+  const agent = await createConfiguredAgent(definition, {
+    ...modelOptions,
+    onStreamEvent: (event) => {
+      onStreamEvent?.(event);
+      queue.push(event);
+    },
+  });
   const agentCheckpointer = await getAgentCheckpointer();
   const agentThreadId = threadId
     ? createAgentThreadId(definition.id, threadId)
@@ -76,7 +99,7 @@ export async function* streamConfiguredAgentText({
           threadId,
         })
       : messages;
-  const result = await runWithTimeout(
+  void runWithTimeout(
     (timeoutSignal) =>
       agent.invoke(
         { messages: invocationMessages },
@@ -94,17 +117,94 @@ export async function* streamConfiguredAgentText({
       parentSignal: signal,
       timeoutMs: definition.modelOptions?.timeout ?? DEFAULT_MODEL_TIMEOUT,
     },
-  );
-  if (agentThreadId) {
-    initializedAgentThreads.add(agentThreadId);
-  }
+  )
+    .then((result) => {
+      if (agentThreadId) {
+        initializedAgentThreads.add(agentThreadId);
+      }
 
-  const lastMessage = result.messages.at(-1);
-  const text = normalizeMessageContent(lastMessage?.content);
+      const lastMessage = result.messages.at(-1);
+      const structuredResponse = getStructuredResponse(result);
+      const text =
+        getStructuredAnswer(structuredResponse) ??
+        normalizeMessageContent(lastMessage?.content);
 
-  if (text) {
-    yield text;
+      if (text) {
+        queue.push({ type: "text_delta", text });
+      }
+      if (structuredResponse !== undefined) {
+        queue.push({ type: "structured_response", response: structuredResponse });
+      }
+      queue.close();
+    })
+    .catch((error: unknown) => {
+      queue.fail(error);
+    });
+
+  for await (const event of queue) {
+    yield event;
   }
+}
+
+export async function* streamConfiguredAgentText(
+  options: StreamConfiguredAgentTextOptions,
+) {
+  for await (const event of streamConfiguredAgentEvents(options)) {
+    if (event.type === "text_delta") {
+      yield event.text;
+    }
+  }
+}
+
+function createToolCallStreamingMiddleware(
+  onStreamEvent: (event: ChatStreamEvent) => void,
+) {
+  return createMiddleware({
+    name: "ToolCallStreamingMiddleware",
+    wrapToolCall: async (request, handler) => {
+      const toolName = String(
+        request.toolCall.name || request.tool?.name || "unknown_tool",
+      );
+      const toolCallId =
+        String(request.toolCall.id || `${toolName}-${crypto.randomUUID()}`);
+      const args = request.toolCall.args ?? {};
+
+      if (isStructuredResponseTool(toolName)) {
+        return handler(request);
+      }
+
+      onStreamEvent({
+        type: "tool_call",
+        args,
+        status: "running",
+        toolCallId,
+        toolName,
+      });
+
+      try {
+        const result = await handler(request);
+        onStreamEvent({
+          type: "tool_call",
+          args,
+          result: normalizeToolResult(result),
+          status: "complete",
+          toolCallId,
+          toolName,
+        });
+        return result;
+      } catch (error) {
+        onStreamEvent({
+          type: "tool_call",
+          args,
+          error: formatUnknownError(error),
+          status: "error",
+          toolCallId,
+          toolName,
+        });
+        throw error;
+      }
+    },
+  });
 }
 
 async function runWithTimeout<T>(
@@ -236,4 +336,124 @@ function normalizeMessageContent(content: unknown) {
       return "";
     })
     .join("");
+}
+
+function getStructuredResponse(result: unknown) {
+  if (!result || typeof result !== "object") {
+    return undefined;
+  }
+
+  if (!("structuredResponse" in result)) {
+    return undefined;
+  }
+
+  return (result as { structuredResponse?: unknown }).structuredResponse;
+}
+
+function getStructuredAnswer(structuredResponse: unknown) {
+  if (!structuredResponse || typeof structuredResponse !== "object") {
+    return undefined;
+  }
+
+  const answer = (structuredResponse as { answer?: unknown }).answer;
+  return typeof answer === "string" && answer.trim() ? answer : undefined;
+}
+
+function isStructuredResponseTool(toolName: string) {
+  return toolName.startsWith("extract-");
+}
+
+function normalizeToolResult(result: unknown) {
+  if (!result || typeof result !== "object") {
+    return result;
+  }
+
+  const candidate = result as {
+    artifact?: unknown;
+    content?: unknown;
+    status?: unknown;
+  };
+
+  return {
+    content: candidate.content,
+    ...(candidate.artifact !== undefined ? { artifact: candidate.artifact } : {}),
+    ...(candidate.status !== undefined ? { status: candidate.status } : {}),
+  };
+}
+
+function formatUnknownError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function createAsyncQueue<T>() {
+  const values: T[] = [];
+  const waiters: Array<(result: IteratorResult<T>) => void> = [];
+  let closed = false;
+  let failed: unknown;
+
+  return {
+    close() {
+      if (closed) {
+        return;
+      }
+
+      closed = true;
+      while (waiters.length > 0) {
+        waiters.shift()?.({ done: true, value: undefined });
+      }
+    },
+    fail(error: unknown) {
+      if (closed) {
+        return;
+      }
+
+      failed = error;
+      closed = true;
+      while (waiters.length > 0) {
+        waiters.shift()?.({ done: true, value: undefined });
+      }
+    },
+    push(value: T) {
+      if (closed) {
+        return;
+      }
+
+      const waiter = waiters.shift();
+      if (waiter) {
+        waiter({ done: false, value });
+        return;
+      }
+
+      values.push(value);
+    },
+    async *[Symbol.asyncIterator]() {
+      while (true) {
+        if (values.length > 0) {
+          yield values.shift() as T;
+          continue;
+        }
+
+        if (failed) {
+          throw failed;
+        }
+
+        if (closed) {
+          return;
+        }
+
+        const result = await new Promise<IteratorResult<T>>((resolve) => {
+          waiters.push(resolve);
+        });
+
+        if (result.done) {
+          if (failed) {
+            throw failed;
+          }
+          return;
+        }
+
+        yield result.value;
+      }
+    },
+  };
 }

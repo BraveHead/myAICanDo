@@ -1,4 +1,8 @@
-import type { ExportedMessageRepository } from "@assistant-ui/react";
+import {
+  ExportedMessageRepository,
+  type ExportedMessageRepository as ExportedMessageRepositoryData,
+  type ThreadMessageLike,
+} from "@assistant-ui/react";
 import type { AgentMessage } from "@/lib/agent/core/agent-definition";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
 import { isSupportedAgent } from "@/lib/agent/shared/agent-ids";
@@ -51,6 +55,34 @@ export async function listStoredThreads() {
   `);
 
   return result.rows.map(toStoredThread);
+}
+
+export async function createStoredThread(title = "New Chat") {
+  const now = new Date().toISOString();
+  const thread: StoredThread = {
+    id: crypto.randomUUID(),
+    title,
+    createdAt: now,
+    updatedAt: now,
+    status: "regular",
+  };
+
+  if (!hasDatabaseUrl()) {
+    return thread;
+  }
+
+  await ensureThreadStore();
+
+  await getPostgresPool().query(
+    `
+      INSERT INTO assistant_threads (id, title, status, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (id) DO NOTHING
+    `,
+    [thread.id, thread.title, thread.status, thread.createdAt, thread.updatedAt],
+  );
+
+  return thread;
 }
 
 export async function upsertStoredThreads(threads: StoredThread[]) {
@@ -123,6 +155,51 @@ export async function touchThreadFromMessages(
   );
 }
 
+export async function appendThreadMessages({
+  agent,
+  messages,
+  threadId,
+}: {
+  agent?: SupportedAgent;
+  messages: AgentMessage[];
+  threadId: string;
+}) {
+  if (!hasDatabaseUrl() || messages.length === 0) {
+    return;
+  }
+
+  await ensureThreadStore();
+
+  const storedMessages = await loadThreadAgentMessages(threadId);
+  const mergedMessages = mergeAgentMessages(storedMessages, messages);
+  const repository = agentMessagesToRepository(mergedMessages);
+  const title = getTitleFromAgentMessages(mergedMessages);
+  const now = new Date().toISOString();
+
+  await getPostgresPool().query(
+    `
+      INSERT INTO assistant_threads (
+        id,
+        title,
+        status,
+        agent_id,
+        repository,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, 'regular', $3, $4::jsonb, $5, $5)
+      ON CONFLICT (id) DO UPDATE
+      SET
+        title = EXCLUDED.title,
+        status = EXCLUDED.status,
+        agent_id = COALESCE(EXCLUDED.agent_id, assistant_threads.agent_id),
+        repository = EXCLUDED.repository,
+        updated_at = EXCLUDED.updated_at
+    `,
+    [threadId, title, agent ?? null, JSON.stringify(repository), now],
+  );
+}
+
 export async function getThreadRepository(threadId: string) {
   if (!hasDatabaseUrl()) {
     return null;
@@ -135,7 +212,9 @@ export async function getThreadRepository(threadId: string) {
     [threadId],
   );
 
-  return (result.rows[0]?.repository as ExportedMessageRepository | null) ?? null;
+  return (
+    (result.rows[0]?.repository as ExportedMessageRepositoryData | null) ?? null
+  );
 }
 
 export async function saveThreadRepository({
@@ -145,7 +224,7 @@ export async function saveThreadRepository({
 }: {
   thread?: StoredThread;
   threadId: string;
-  repository: ExportedMessageRepository;
+  repository: ExportedMessageRepositoryData;
 }) {
   if (!hasDatabaseUrl()) {
     return;
@@ -265,7 +344,7 @@ function toStoredThread(row: ThreadRow): StoredThread {
 
 function createThreadFromRepository(
   threadId: string,
-  repository: ExportedMessageRepository,
+  repository: ExportedMessageRepositoryData,
 ): StoredThread {
   const now = new Date().toISOString();
   const messages = repositoryToAgentMessages(repository);
@@ -279,7 +358,7 @@ function createThreadFromRepository(
   };
 }
 
-function repositoryToAgentMessages(repository: ExportedMessageRepository) {
+function repositoryToAgentMessages(repository: ExportedMessageRepositoryData) {
   if (!Array.isArray(repository.messages)) {
     return [];
   }
@@ -310,6 +389,17 @@ function repositoryToAgentMessages(repository: ExportedMessageRepository) {
       } satisfies AgentMessage,
     ];
   });
+}
+
+function agentMessagesToRepository(messages: AgentMessage[]) {
+  const now = Date.now();
+  const items: ThreadMessageLike[] = messages.map((message, index) => ({
+    role: message.role,
+    content: message.content,
+    createdAt: new Date(now + index),
+  }));
+
+  return ExportedMessageRepository.fromArray(items);
 }
 
 function getTitleFromAgentMessages(messages: AgentMessage[]) {

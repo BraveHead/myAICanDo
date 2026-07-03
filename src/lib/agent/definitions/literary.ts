@@ -1,5 +1,6 @@
 import { fetchTextFromUrlTool } from "../../tools";
 import type { AgentDefinition } from "../core/agent-definition";
+import { structuredAgentResponseFormat } from "../shared/response-format";
 
 const SYSTEM_PROMPT = `你是一个文学数据助手。
 
@@ -25,6 +26,7 @@ export const literaryAgentDefinition = {
     temperature: 0.3,
     timeout: 600_000,
   },
+  responseFormat: structuredAgentResponseFormat,
   recursionLimit: 10,
   match: (content) =>
     content.includes("gutenberg.org/files/64317/64317-0.txt") &&

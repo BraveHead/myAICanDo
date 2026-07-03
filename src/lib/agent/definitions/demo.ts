@@ -1,6 +1,7 @@
 import { tool } from "langchain";
 import * as z from "zod";
 import type { AgentDefinition } from "../core/agent-definition";
+import { structuredAgentResponseFormat } from "../shared/response-format";
 
 // 一个最小的内联工具：返回当前时间。仅用于演示 agent 的工具调用能力。
 const getCurrentTimeTool = tool(() => new Date().toISOString(), {
@@ -23,6 +24,7 @@ export const demoAgentDefinition = {
   modelOptions: {
     temperature: 0.3,
   },
+  responseFormat: structuredAgentResponseFormat,
   recursionLimit: 8,
   match: (content) => content === "现在几点了？请顺带自我介绍一句。",
 } satisfies AgentDefinition;

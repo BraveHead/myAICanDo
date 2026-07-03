@@ -1,4 +1,5 @@
 import type { ClientTool, ServerTool } from "@langchain/core/tools";
+import type { ResponseFormat } from "langchain";
 import type { CreateProjectChatModelOptions } from "./chat-model";
 import type { SupportedAgent } from "../shared/agent-ids";
 
@@ -12,6 +13,7 @@ export type AgentDefinition = {
   systemPrompt: string;
   tools: (ClientTool | ServerTool)[];
   modelOptions?: Pick<CreateProjectChatModelOptions, "temperature" | "timeout">;
+  responseFormat?: ResponseFormat | ResponseFormat[];
   recursionLimit?: number;
   match?: (content: string) => boolean;
 };

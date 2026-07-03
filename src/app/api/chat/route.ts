@@ -3,10 +3,12 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import { createProjectChatModel } from "@/lib/agent/core/chat-model";
 import type { AgentMessage } from "@/lib/agent/core/agent-definition";
 import { resolveAgentDefinition } from "@/lib/agent/core/agent-registry";
-import { streamConfiguredAgentText } from "@/lib/agent/core/agent-runner";
+import { streamConfiguredAgentEvents } from "@/lib/agent/core/agent-runner";
 import { createLangSmithRunConfig } from "@/lib/agent/core/langsmith-tracing";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
+import { encodeChatSseEvent, type ChatStreamEvent } from "@/lib/chat-stream";
 import {
+  appendThreadMessages,
   getThreadAgent,
   loadThreadAgentMessages,
   mergeAgentMessages,
@@ -84,6 +86,7 @@ export async function POST(request: Request) {
     role: message.role,
     content: message.content,
   }));
+  const messagesToAppend = getMessagesToAppend(agentMessages);
   await touchThreadFromMessages(threadId, agentMessages);
 
   const stream = new ReadableStream<Uint8Array>({
@@ -107,9 +110,9 @@ export async function POST(request: Request) {
           modelName,
           threadId,
         });
-        const chunks =
+        const events: AsyncIterable<ChatStreamEvent> =
           agentDefinition !== undefined
-            ? streamConfiguredAgentText({
+            ? streamConfiguredAgentEvents({
                 definition: agentDefinition,
                 apiKey,
                 baseURL,
@@ -119,7 +122,7 @@ export async function POST(request: Request) {
                 signal: request.signal,
                 threadId,
               })
-            : streamChatModelText({
+            : streamChatModelEvents({
                 model: createProjectChatModel({
                   apiKey,
                   baseURL,
@@ -134,13 +137,39 @@ export async function POST(request: Request) {
                 signal: request.signal,
               });
 
-        for await (const chunk of chunks) {
-          controller.enqueue(encoder.encode(chunk));
+        let assistantText = "";
+
+        for await (const event of events) {
+          if (event.type === "text_delta") {
+            assistantText += event.text;
+          }
+          controller.enqueue(encoder.encode(encodeChatSseEvent(event)));
+        }
+
+        if (assistantText) {
+          await appendThreadMessages({
+            agent: agentDefinition?.id,
+            messages: [
+              ...messagesToAppend,
+              {
+                role: "assistant",
+                content: assistantText,
+              },
+            ],
+            threadId,
+          });
         }
 
         controller.close();
       } catch (error) {
-        controller.enqueue(encoder.encode(formatStreamError(error)));
+        controller.enqueue(
+          encoder.encode(
+            encodeChatSseEvent({
+              type: "text_delta",
+              text: formatStreamError(error),
+            }),
+          ),
+        );
         controller.close();
       }
     },
@@ -152,7 +181,9 @@ export async function POST(request: Request) {
   return new Response(stream, {
     headers: {
       "Cache-Control": "no-store",
-      "Content-Type": "text/plain; charset=utf-8",
+      "Connection": "keep-alive",
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "X-Accel-Buffering": "no",
       "X-Thread-Id": threadId,
     },
   });
@@ -164,6 +195,14 @@ function getRequestMessages(body: ChatRequestBody) {
   }
 
   return body.message ? [body.message] : [];
+}
+
+function getMessagesToAppend(messages: AgentMessage[]) {
+  const latestUserMessage = messages.findLast(
+    (message) => message.role === "user",
+  );
+
+  return latestUserMessage ? [latestUserMessage] : messages.slice(-1);
 }
 
 function resolveThreadId(threadId: string | undefined) {
@@ -190,7 +229,7 @@ function isAbortError(error: unknown) {
   );
 }
 
-async function* streamChatModelText({
+async function* streamChatModelEvents({
   model,
   messages,
   runConfig,
@@ -206,7 +245,10 @@ async function* streamChatModelText({
   for await (const chunk of chunks) {
     const text = normalizeChunkContent(chunk.content);
     if (text) {
-      yield text;
+      yield {
+        type: "text_delta",
+        text,
+      } satisfies ChatStreamEvent;
     }
   }
 }

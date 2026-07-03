@@ -7,13 +7,18 @@ import {
   ThreadPrimitive,
   useAui,
   useAuiState,
+  type DataMessagePartProps,
+  type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
 import {
+  AlertTriangle,
   BarChart3,
   BookOpen,
   Bot,
+  CheckCircle2,
   Code2,
   Lightbulb,
+  LoaderCircle,
   Mic,
   PanelLeft,
   PenLine,
@@ -22,22 +27,16 @@ import {
   Share,
   Sparkles,
   SunMedium,
+  Wrench,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  createThread,
+  createTransientThread,
   getThreadTitle,
-  loadActiveThreadId,
-  loadRepository,
   loadRepositoryFromServer,
   loadThreadsFromServer,
-  loadThreads,
   saveActiveThreadId,
-  saveRepository,
-  saveRepositoryToServer,
-  saveThreads,
-  saveThreadsToServer,
   type StoredThread,
 } from "@/lib/thread-storage";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
@@ -117,43 +116,39 @@ export function ChatWorkspace() {
 
 function ChatWorkspaceContent() {
   const aui = useAui();
+  const isRunning = useAuiState((state) => state.thread.isRunning);
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const switchingRef = useRef(false);
-  const serverSyncedRef = useRef(false);
+  const previousRunningRef = useRef(false);
 
-  useEffect(() => {
-    queueMicrotask(() => {
-      const storedThreads = loadThreads();
-      const initialThreads =
-        storedThreads.length > 0 ? storedThreads : [createThread()];
-      const storedActiveThreadId = loadActiveThreadId();
-      const initialActiveThreadId =
-        storedActiveThreadId &&
-        initialThreads.some((thread) => thread.id === storedActiveThreadId)
-          ? storedActiveThreadId
-          : initialThreads[0]?.id;
-
-      setThreads(initialThreads);
-      setActiveThreadId(initialActiveThreadId ?? null);
-      saveThreads(initialThreads);
-
-      if (initialActiveThreadId) {
-        saveActiveThreadId(initialActiveThreadId);
-      }
-
-      setHydrated(true);
-    });
+  const selectThread = useCallback((threadId: string | null) => {
+    setActiveThreadId(threadId);
+    saveActiveThreadId(threadId);
   }, []);
 
+  const refreshThreads = useCallback(
+    async (preferredThreadId: string | null) => {
+      const serverThreads = await loadThreadsFromServer();
+      if (serverThreads.length === 0) {
+        return;
+      }
+
+      setThreads(serverThreads);
+
+      const nextThreadId =
+        preferredThreadId &&
+        serverThreads.some((thread) => thread.id === preferredThreadId)
+          ? preferredThreadId
+          : serverThreads[0]?.id ?? null;
+
+      selectThread(nextThreadId);
+    },
+    [selectThread],
+  );
+
   useEffect(() => {
-    if (!hydrated || serverSyncedRef.current) {
-      return;
-    }
-
-    serverSyncedRef.current = true;
-
     let cancelled = false;
     void (async () => {
       const serverThreads = await loadThreadsFromServer();
@@ -161,30 +156,22 @@ function ChatWorkspaceContent() {
         return;
       }
 
-      if (serverThreads.length === 0) {
-        await saveThreadsToServer(threads);
+      const initialThreads =
+        serverThreads.length > 0 ? serverThreads : [createTransientThread()];
+
+      if (cancelled) {
         return;
       }
 
-      setThreads(serverThreads);
-      saveThreads(serverThreads);
-
-      const nextActiveThreadId =
-        activeThreadId &&
-        serverThreads.some((thread) => thread.id === activeThreadId)
-          ? activeThreadId
-          : serverThreads[0]?.id;
-
-      if (nextActiveThreadId) {
-        setActiveThreadId(nextActiveThreadId);
-        saveActiveThreadId(nextActiveThreadId);
-      }
+      setThreads(initialThreads);
+      selectThread(initialThreads[0]?.id ?? null);
+      setHydrated(true);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId, hydrated, threads]);
+  }, [selectThread]);
 
   useEffect(() => {
     if (!hydrated || !activeThreadId) {
@@ -193,30 +180,25 @@ function ChatWorkspaceContent() {
 
     let cancelled = false;
     switchingRef.current = true;
-    const repository = loadRepository(activeThreadId);
-    const thread = aui.thread();
-
-    if (repository) {
-      thread.import(repository);
-    } else {
-      thread.reset();
-    }
-
-    queueMicrotask(() => {
-      switchingRef.current = false;
-    });
+    aui.thread().reset();
 
     void (async () => {
       const serverRepository = await loadRepositoryFromServer(activeThreadId);
-      if (cancelled || !serverRepository) {
+      if (cancelled) {
         return;
       }
 
       switchingRef.current = true;
-      aui.thread().import(serverRepository);
-      saveRepository(activeThreadId, serverRepository);
+      if (serverRepository) {
+        aui.thread().import(serverRepository);
+      } else {
+        aui.thread().reset();
+      }
+
       queueMicrotask(() => {
-        switchingRef.current = false;
+        if (!cancelled) {
+          switchingRef.current = false;
+        }
       });
     })();
 
@@ -235,60 +217,61 @@ function ChatWorkspaceContent() {
         return;
       }
 
-      const thread = aui.thread();
-      const repository = thread.export();
-      const state = thread.getState();
-      saveRepository(activeThreadId, repository);
+      const state = aui.thread().getState();
 
       const nextTitle = getThreadTitle(state.messages);
       setThreads((currentThreads) => {
+        const updatedAt = new Date().toISOString();
         const nextThreads = currentThreads.map((thread) =>
-          thread.id === activeThreadId
+          thread.id === activeThreadId && thread.title !== nextTitle
             ? {
                 ...thread,
                 title: nextTitle,
-                updatedAt: new Date().toISOString(),
+                updatedAt,
               }
             : thread,
         );
-        saveThreads(nextThreads);
-        void saveThreadsToServer(nextThreads);
-        void saveRepositoryToServer({
-          repository,
-          thread: nextThreads.find((thread) => thread.id === activeThreadId),
-          threadId: activeThreadId,
-        });
-        return nextThreads;
+
+        const changed = nextThreads.some(
+          (thread, index) => thread !== currentThreads[index],
+        );
+        return changed ? nextThreads : currentThreads;
       });
     });
   }, [activeThreadId, hydrated, aui]);
+
+  useEffect(() => {
+    if (!hydrated) {
+      previousRunningRef.current = isRunning;
+      return;
+    }
+
+    if (previousRunningRef.current && !isRunning) {
+      void refreshThreads(activeThreadId);
+    }
+
+    previousRunningRef.current = isRunning;
+  }, [activeThreadId, hydrated, isRunning, refreshThreads]);
 
   const activeThread = useMemo(
     () => threads.find((thread) => thread.id === activeThreadId),
     [activeThreadId, threads],
   );
 
-  const persistCurrentThread = useCallback(() => {
-    if (!activeThreadId) {
-      return;
-    }
-
-    saveRepository(activeThreadId, aui.thread().export());
-  }, [activeThreadId, aui]);
-
   const handleNewThread = useCallback(() => {
-    persistCurrentThread();
-
-    const nextThread = createThread();
-    setThreads((currentThreads) => {
-      const nextThreads = [nextThread, ...currentThreads];
-      saveThreads(nextThreads);
-      void saveThreadsToServer(nextThreads);
-      return nextThreads;
+    const nextThread = createTransientThread();
+    switchingRef.current = true;
+    aui.thread().reset();
+    queueMicrotask(() => {
+      switchingRef.current = false;
     });
-    setActiveThreadId(nextThread.id);
-    saveActiveThreadId(nextThread.id);
-  }, [persistCurrentThread]);
+
+    setThreads((currentThreads) => [
+      nextThread,
+      ...currentThreads.filter((thread) => thread.id !== nextThread.id),
+    ]);
+    selectThread(nextThread.id);
+  }, [aui, selectThread]);
 
   const handleSelectThread = useCallback(
     (threadId: string) => {
@@ -296,11 +279,9 @@ function ChatWorkspaceContent() {
         return;
       }
 
-      persistCurrentThread();
-      setActiveThreadId(threadId);
-      saveActiveThreadId(threadId);
+      selectThread(threadId);
     },
-    [activeThreadId, persistCurrentThread],
+    [activeThreadId, selectThread],
   );
 
   return (
@@ -521,6 +502,14 @@ function AssistantMessage() {
             components={{
               Text: MarkdownText,
               Empty: AssistantLoading,
+              tools: {
+                Fallback: ToolCallPart,
+              },
+              data: {
+                by_name: {
+                  structured_response: StructuredResponsePart,
+                },
+              },
             }}
           />
           <MessagePrimitive.Error>
@@ -532,6 +521,91 @@ function AssistantMessage() {
       </div>
     </MessagePrimitive.Root>
   );
+}
+
+function StructuredResponsePart({ data }: DataMessagePartProps) {
+  return (
+    <div className="my-3 overflow-hidden rounded-xl border border-[#e3e8ef] bg-[#f8fbff] text-sm text-[#202020]">
+      <div className="flex items-center gap-2 border-b border-[#e7edf5] px-3 py-2 font-medium">
+        <Code2 size={15} />
+        <span>结构化结果</span>
+      </div>
+      <div className="px-3 py-2">
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white px-3 py-2 font-mono text-xs leading-5 text-[#333333]">
+          {formatToolPayload(data)}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function ToolCallPart({
+  args,
+  argsText,
+  isError,
+  result,
+  status,
+  toolName,
+}: ToolCallMessagePartProps) {
+  const running = status.type === "running";
+  const failed = isError || status.type === "incomplete";
+  const Icon = running ? LoaderCircle : failed ? AlertTriangle : CheckCircle2;
+  const statusText = running ? "运行中" : failed ? "失败" : "完成";
+
+  return (
+    <div className="my-3 overflow-hidden rounded-xl border border-[#e7e7e7] bg-[#fafafa] text-sm text-[#202020]">
+      <div className="flex items-center justify-between gap-3 border-b border-[#eeeeee] px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 font-medium">
+          <Wrench size={15} />
+          <span className="truncate font-mono text-[13px]">{toolName}</span>
+        </div>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs text-[#666666]">
+          <Icon
+            className={running ? "animate-spin" : undefined}
+            size={14}
+          />
+          {statusText}
+        </span>
+      </div>
+      <div className="space-y-2 px-3 py-2">
+        <ToolPayload label="参数" value={argsText || args} />
+        {!running && <ToolPayload label="结果" value={result} />}
+      </div>
+    </div>
+  );
+}
+
+function ToolPayload({ label, value }: { label: string; value: unknown }) {
+  const text = formatToolPayload(value);
+
+  if (!text) {
+    return null;
+  }
+
+  return (
+    <div>
+      <div className="mb-1 text-xs font-medium text-[#777777]">{label}</div>
+      <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white px-3 py-2 font-mono text-xs leading-5 text-[#333333]">
+        {text}
+      </pre>
+    </div>
+  );
+}
+
+function formatToolPayload(value: unknown) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function MarkdownText() {
