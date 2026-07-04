@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LangGraph Checkpointer 数据结构与关联关系分析</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel2: #1e222b;
+    --border: #2a2f3a;
+    --text: #d6dae1;
+    --muted: #8b93a1;、
+    --accent: #6ea8fe;
+    --accent2: #7ee787;
+    --warn: #f0a35e;
+    --pink: #ff9ecb;
+    --code-bg: #12151c;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .layout { display: flex; max-width: 1240px; margin: 0 auto; }
+  nav.toc {
+    position: sticky; top: 0; align-self: flex-start;
+    width: 250px; height: 100vh; overflow-y: auto;
+    padding: 28px 18px; border-right: 1px solid var(--border);
+    font-size: 13.5px;
+  }
+  nav.toc h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: 0 0 14px; }
+  nav.toc a { display: block; color: var(--muted); text-decoration: none; padding: 5px 10px; border-radius: 6px; margin-bottom: 2px; }
+  nav.toc a:hover { color: var(--text); background: var(--panel2); }
+  main { flex: 1; min-width: 0; padding: 42px 46px 120px; }
+  header.hero { margin-bottom: 40px; }
+  header.hero h1 { font-size: 28px; margin: 0 0 10px; line-height: 1.3; }
+  header.hero .sub { color: var(--muted); font-size: 15px; }
+  header.hero .meta { margin-top: 18px; font-size: 13px; color: var(--muted); display: flex; gap: 20px; flex-wrap: wrap; }
+  header.hero .meta code { color: var(--accent); }
+  h2.section { font-size: 21px; margin: 52px 0 18px; padding-bottom: 10px; border-bottom: 1px solid var(--border); scroll-margin-top: 20px; }
+  h2.section .num { color: var(--accent); font-weight: 700; margin-right: 10px; }
+  h3 { font-size: 16.5px; margin: 30px 0 12px; color: #eef1f5; }
+  p { margin: 12px 0; }
+  code { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-size: 13px; background: var(--panel2); padding: 2px 6px; border-radius: 4px; color: #e6b673; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12.8px; line-height: 1.6; }
+  pre code { background: none; padding: 0; color: var(--text); }
+  .diagram { color: #a9b4c4; }
+  table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: #eef1f5; font-weight: 600; }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.015); }
+  td code { font-size: 12.5px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 4px 22px; margin: 20px 0; }
+  .callout { border-left: 3px solid var(--accent); background: var(--panel2); padding: 12px 18px; border-radius: 0 8px 8px 0; margin: 20px 0; }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.warn strong { color: var(--warn); }
+  .callout .tag { font-weight: 700; color: var(--accent); }
+  .pill { display: inline-block; background: var(--panel2); border: 1px solid var(--border); border-radius: 20px; padding: 2px 12px; font-size: 12px; color: var(--muted); margin: 2px; }
+  .hl { color: var(--accent2); font-weight: 600; }
+  .hl-pink { color: #ff9ecb; font-weight: 600; }
+  .hl-warn { color: var(--warn); }
+  .tid { color: #ffd479; }
+  strong { color: #f2f4f7; }
+  a.anchor { color: var(--accent); text-decoration: none; }
+  footer { margin-top: 70px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+  @media (max-width: 900px) {
+    nav.toc { display: none; }
+    main { padding: 28px 20px 80px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="toc">
+    <h2>目录</h2>
+    <a href="#overview">概览：两套存储</a>
+    <a href="#tables">1. 三张表的角色</a>
+    <a href="#thread-id">2. thread_id 命名</a>
+    <a href="#chain">3. checkpoints 链表</a>
+    <a href="#blobs">4. checkpoints → blobs</a>
+    <a href="#writes">5. writes 预写日志</a>
+    <a href="#relation">6. 关联关系全景</a>
+    <a href="#trace">7. 一次回合的完整轨迹</a>
+    <a href="#step1">· step1 tool_call</a>
+    <a href="#step2">· step2 ToolMessage</a>
+    <a href="#step3">· step3 最终答案</a>
+    <a href="#sql">8. 常用查询 SQL</a>
+    <a href="#takeaway">9. 结论</a>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <h1>LangGraph Checkpointer 数据结构与关联关系分析</h1>
+      <div class="sub">以本项目 <code>literary</code> agent 一次真实盖茨比问答会话为样本，拆解 PostgresSaver 的持久化机制</div>
+      <div class="meta">
+        <span>项目：<code>myAICanDo</code></span>
+        <span>样本 thread：<code class="tid">literary:9ec4f893-…7635e622f624</code></span>
+        <span>驱动：<code>@langchain/langgraph-checkpoint-postgres</code></span>
+        <span>日期：2026-07-04</span>
+      </div>
+    </header>
+
+    <div class="card">
+      <p style="margin:16px 0;"><strong>一句话总览：</strong>项目里存在<strong>两套彼此独立的存储</strong>——业务侧 <code>assistant_threads</code>（给 UI 展示的会话消息，key 是原始 <code>threadId</code>），和 LangGraph 侧由 <code>PostgresSaver.setup()</code> 自动建的 4 张 checkpoint 表（存 agent 运行的完整状态机轨迹，key 是 <code>agentId:threadId</code>）。两者通过 <code>createAgentThreadId()</code> 拼接的 thread_id 关联。本文聚焦后者。</p>
+    </div>
+
+    <h2 class="section" id="overview"><span class="num">§0</span>代码入口</h2>
+    <p>在 <code>src/lib/agent/core/agent-runner.ts</code>：</p>
+    <pre><code>// createAgentCheckpointer()  —— 有 DATABASE_URL 就用 Postgres，否则内存
+const postgresSaver = new PostgresSaver(getPostgresPool());
+await postgresSaver.setup();   // ← 自动建 4 张表
+
+// createAgentThreadId()  —— 用 agentId 前缀隔离同一前端会话的不同 agent
+function createAgentThreadId(agentId, threadId) {
+  return `${agentId}:${threadId}`;
+}</code></pre>
+    <p><code>setup()</code> 执行的建表 DDL 位于 <code>node_modules/@langchain/langgraph-checkpoint-postgres/dist/migrations.js</code>，共建 4 张表：<code>checkpoint_migrations</code>、<code>checkpoints</code>、<code>checkpoint_blobs</code>、<code>checkpoint_writes</code>。</p>
+
+    <h2 class="section" id="tables"><span class="num">§1</span>三张表各是什么角色</h2>
+    <table>
+      <thead><tr><th>表</th><th>一句话定位</th><th>主键</th></tr></thead>
+      <tbody>
+        <tr><td><code>checkpoints</code></td><td>每一步的<strong>"快照索引"</strong>——记录这一步引用了哪些 channel 的哪个版本</td><td><code>(thread_id, checkpoint_ns, checkpoint_id)</code></td></tr>
+        <tr><td><code>checkpoint_blobs</code></td><td>真正的<strong>"状态数据仓库"</strong>——按 channel+version 存实际内容 (BYTEA)</td><td><code>(thread_id, checkpoint_ns, channel, version)</code></td></tr>
+        <tr><td><code>checkpoint_writes</code></td><td><strong>"待落盘的中间写"</strong>——某步任务产出、尚未合进下一快照的增量</td><td><code>(thread_id, checkpoint_ns, checkpoint_id, task_id, idx)</code></td></tr>
+        <tr><td><code>checkpoint_migrations</code></td><td>只记 schema 版本号，无业务数据</td><td><code>(v)</code></td></tr>
+      </tbody>
+    </table>
+    <p>三张数据表的第一列全是 <code>thread_id</code>——它是把它们绑在一起的<span class="hl">总外键</span>。<code>checkpoint_ns</code>（本项目均为空串 <code>''</code>）是子图命名空间，此处未用。</p>
+
+    <h2 class="section" id="thread-id"><span class="num">§2</span>thread_id 命名：agentId 前缀隔离</h2>
+    <p>前端一个会话 UUID <code>73ae2ead-…</code>，经不同 agent 前缀拼成互不相干的 thread_id：</p>
+    <pre><code class="diagram">weather:73ae2ead-...
+demo:73ae2ead-...
+literary:73ae2ead-...</code></pre>
+    <p>于是 <code>checkpoints</code> 表里，同一前端会话下的 weather / demo / literary 各占<strong>独立的行</strong>，LangGraph 状态互不串。实测库中出现过 <code class="tid">demo:e0ac2f30-…</code> 与 <code class="tid">weather:e0ac2f30-…</code> 共享同一 UUID 的情况，正是此机制。</p>
+
+    <h3>为什么需要用 agentId 隔离？</h3>
+    <p>核心原因：<strong>一个前端 threadId 对应的"一次会话"，底层可能被多个不同的 agent 处理，而每个 agent 的 LangGraph 状态必须互相隔离。</strong> threadId 和 agent 是两个维度：</p>
+    <table>
+      <thead><tr><th>维度</th><th>取值</th><th>由谁决定</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>threadId</code></td><td><code class="tid">73ae2ead-…</code></td><td>前端 UI 生成</td><td>一个对话窗口 / 会话</td></tr>
+        <tr><td><code>agentId</code></td><td><code>weather</code> / <code>literary</code> …</td><td>后端按请求路由</td><td>具体哪个 agent 在处理</td></tr>
+      </tbody>
+    </table>
+    <p>关键在于：<strong>同一个 threadId 下，不同轮次可能命中不同 agent</strong>。比如在同一对话框里先问天气（→ weather agent），又贴一段小说让它分析（→ literary agent）——前端 threadId 没变，但底层换了 agent。</p>
+
+    <p>如果直接用裸 <code>73ae2ead-…</code> 当 thread_id，weather 和 literary 会写进<strong>同一条时间线</strong>，后果：</p>
+    <table>
+      <thead><tr><th>问题</th><th>后果</th></tr></thead>
+      <tbody>
+        <tr><td>历史串味</td><td>literary 续跑时读到 weather 留下的 tool_call、系统提示残留，上下文被污染</td></tr>
+        <tr><td>checkpoint 链断裂</td><td>两个 agent 交替写，<code>parent_checkpoint_id</code> 会指向"另一个 agent 的快照"，状态机错乱</td></tr>
+        <tr><td>工具 / systemPrompt 不匹配</td><td>weather 历史里有 <code>get_weather</code> 的 tool_call，literary 并无此工具，恢复状态时可能报错</td></tr>
+      </tbody>
+    </table>
+    <p>加前缀后，同一 UUID 下每个 agent 各留各的记忆链（<code class="tid">weather:73ae2ead-…</code> / <code class="tid">literary:73ae2ead-…</code>），互不干扰。</p>
+
+    <div class="callout">
+      <span class="tag">这也解释了为什么要分两套存储</span>
+      <p style="margin:8px 0 0;">给 UI 展示消息的业务表 <code>assistant_threads</code> 用的是<strong>裸 threadId</strong>——UI 视角就是"一个连续对话"，不关心底层换没换 agent；而 LangGraph 引擎需要 <code>agentId:threadId</code>，因为每个 agent 是独立的状态机，绝不能串。</p>
+      <table style="margin:14px 0 4px;">
+        <thead><tr><th>视角</th><th>key</th><th>关注点</th></tr></thead>
+        <tbody>
+          <tr><td>UI / 业务</td><td><code>threadId</code></td><td>一个连续对话，展示所有消息</td></tr>
+          <tr><td>LangGraph 引擎</td><td><code>agentId:threadId</code></td><td>每个 agent 的独立状态机，不能串</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 class="section" id="chain"><span class="num">§3</span>checkpoints：一条单向链表</h2>
+    <p>样本 thread 的 5 个 checkpoint，靠 <code>parent_checkpoint_id</code> 指回上一行，构成可回溯的时间线：</p>
+    <pre><code class="diagram">step -1  59d005e3b23a   parent=null      ← 用户输入进入
+step  0  fdbfff889324   parent=59d0...   ← agent 首次推理
+step  1  96d611d4a949   parent=fdbf...   ← 发起工具调用
+step  2  44a94fee8182   parent=96d6...   ← 工具结果回填
+step  3  503b5efc4ea5   parent=44a9...   ← 生成最终答案</code></pre>
+    <p>每走一步 graph 就落一个快照 → 一轮 tool-calling 对话产生 5 行。<code>metadata->>'step'</code> 是步号，<code>source</code> 为 <code>input</code>/<code>loop</code>。</p>
+
+    <h2 class="section" id="blobs"><span class="num">§4</span>checkpoints → checkpoint_blobs：靠 version 号引用（核心机制）</h2>
+    <p><strong>checkpoints 不直接存状态内容，而是存一张"版本清单"</strong> <code>channel_versions</code>（在 <code>checkpoint</code> JSONB 字段里）：</p>
+    <pre><code class="diagram">step 0:  {messages:2, __start__:2, branch:to:model_request:2}
+step 1:  {messages:3, __start__:2, __pregel_tasks:3, branch:to:model_request:3}
+step 2:  {messages:4, __start__:2, __pregel_tasks:4, branch:to:model_request:4}
+step 3:  {messages:5, __start__:2, __pregel_tasks:4, structuredResponse:5, branch:to:model_request:5}</code></pre>
+    <p>而 blobs 表存的正是这些 <code>(channel, version)</code> 的实际数据。<strong>关联方式：</strong>checkpoints 某行的 <code>channel_versions[channel] = N</code> → 精确指向 blobs 里 <code>WHERE channel=channel AND version=N</code> 那条。下面用真实 JOIN 结果证明。</p>
+
+    <h3>🔬 证据 1：把 step3 的清单逐条 JOIN 到 blobs，5 条全部命中</h3>
+    <p>光看两张分开的表看不出引用关系，那就直接 JOIN。取 step3 的 <code>channel_versions</code>（<code>{messages:5, __start__:2, __pregel_tasks:4, structuredResponse:5, branch:to:model_request:5}</code>），拿每个 <code>(channel, version)</code> 去 blobs 表精确匹配：</p>
+    <pre><code>SELECT cv.channel, cv.ver AS 清单里的version,
+       b.version AS blobs命中的version, b.type, length(b.blob) AS 字节数
+FROM checkpoints c
+CROSS JOIN LATERAL jsonb_each_text(c.checkpoint->'channel_versions') AS cv(channel, ver)
+LEFT JOIN checkpoint_blobs b
+  ON b.thread_id = c.thread_id AND b.channel = cv.channel AND b.version = cv.ver
+WHERE c.thread_id = '...7635e622f624' AND c.metadata->>'step' = '3';</code></pre>
+    <table>
+      <thead><tr><th>清单里的 channel</th><th>清单里的 version</th><th>blobs 命中的 version</th><th>type</th><th>字节数</th><th>命中?</th></tr></thead>
+      <tbody>
+        <tr><td><code>__pregel_tasks</code></td><td>4</td><td>4</td><td>json</td><td>7</td><td class="hl">✓</td></tr>
+        <tr><td><code>__start__</code></td><td>2</td><td>2</td><td>empty</td><td>—</td><td class="hl">✓</td></tr>
+        <tr><td><code>branch:to:model_request</code></td><td>5</td><td>5</td><td>empty</td><td>—</td><td class="hl">✓</td></tr>
+        <tr><td><code>messages</code></td><td>5</td><td>5</td><td>json</td><td>14305</td><td class="hl">✓</td></tr>
+        <tr><td><code>structuredResponse</code></td><td>5</td><td>5</td><td>json</td><td>27</td><td class="hl">✓</td></tr>
+      </tbody>
+    </table>
+    <p><strong>5 条全部 <span class="hl">✓ 命中</span>，无一落空。</strong>这就是"引用"的直接证据——checkpoint 的清单里写了什么 <code>(channel, version)</code>，blobs 表里就一定有对应那一行实际数据。反过来，把某个 checkpoint 的所有清单项 JOIN 出来拼起来，就还原出这一步的完整状态。</p>
+
+    <h3>🔬 证据 2：messages 每步指向不同 blob 行，字节数随对话增长</h3>
+    <p>version 递增不是编号游戏——每个新 version 是一份<strong>全量的、更长的</strong>消息历史。看 blob 字节数随 step 单调变大，正好对应 §7 里消息从 1 条长到 6 条：</p>
+    <table>
+      <thead><tr><th>step</th><th>引用的 messages 版本</th><th>blobs 命中行</th><th>该 blob 字节数</th><th>对应内容（见 §7）</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td>2</td><td>v2</td><td>990</td><td>仅 Human 问题</td></tr>
+        <tr><td>1</td><td>3</td><td>v3</td><td>2349</td><td>+ AI 发起 tool_call</td></tr>
+        <tr><td>2</td><td>4</td><td>v4</td><td>6489</td><td>+ ToolMessage（抓回正文）</td></tr>
+        <tr><td>3</td><td>5</td><td>v5</td><td>14305</td><td>+ extract-1 结构化答案等</td></tr>
+      </tbody>
+    </table>
+    <p>字节数 990 → 2349 → 6489 → 14305，是"消息越攒越多"的物理证据。每个 step 的 <code>channel_versions.messages</code> 精确指到对应大小的那一行。</p>
+
+    <h3>🔬 证据 3：同一个 blob 行被多个 checkpoint 共享（去重）</h3>
+    <p>反向查：拿 blobs 里的某一行，看有几个 checkpoint 的清单在引用它。结果证明"没变的 channel 不重复存"：</p>
+    <table>
+      <thead><tr><th>blob 行（channel:version）</th><th>引用它的 steps</th><th>被几个 checkpoint 引用</th></tr></thead>
+      <tbody>
+        <tr><td><code>__start__:1</code></td><td>-1</td><td>1</td></tr>
+        <tr><td class="hl"><code>__start__:2</code></td><td class="hl">0, 1, 2, 3</td><td class="hl">4 ← 一行被 4 个 checkpoint 共享</td></tr>
+        <tr><td><code>__pregel_tasks:3</code></td><td>1</td><td>1</td></tr>
+        <tr><td class="hl"><code>__pregel_tasks:4</code></td><td class="hl">2, 3</td><td class="hl">2 ← 一行被 2 个 checkpoint 共享</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <span class="tag">结论 · 版本去重共享</span>
+      <p style="margin:8px 0 0;"><code>__start__:2</code> 这<strong>一行</strong> blob 数据，被 step 0/1/2/3 <strong>四个</strong> checkpoint 的 <code>channel_versions</code> 同时指向；<code>__pregel_tasks:4</code> 被 step 2、3 共用。<strong>某个 channel 这一步没变，就不写新 blob 行，多个 checkpoint 的清单指向同一行。</strong>这就是为什么 blobs 仅 13 行却能支撑 5 个 checkpoint 的完整状态——每个 checkpoint 的完整状态 = 按它的 version 清单去 blobs 拼各 channel，共用的部分共享同一行。</p>
+    </div>
+
+    <p>样本 thread 全部 blobs（按 channel/version，共 13 行）：</p>
+    <table>
+      <thead><tr><th>channel</th><th>versions</th><th>被哪些 step 引用</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>messages</code></td><td>v2, v3, v4, v5</td><td>0 / 1 / 2 / 3（各不同）</td><td>对话消息历史，逐版本全量增长</td></tr>
+        <tr><td><code>structuredResponse</code></td><td>v5</td><td>3</td><td>结构化输出 channel（本例为 undefined，见 §7.3）</td></tr>
+        <tr><td><code>__start__</code></td><td>v1, v2</td><td>v2 被 0/1/2/3 共享</td><td>入口 channel</td></tr>
+        <tr><td><code>branch:to:model_request</code></td><td>v2–v5</td><td>2 / 3 / 4 / 5</td><td>LangGraph 分支控制</td></tr>
+        <tr><td><code>__pregel_tasks</code></td><td>v3, v4</td><td>v4 被 2/3 共享</td><td>Pregel 引擎调度</td></tr>
+      </tbody>
+    </table>
+
+    <h2 class="section" id="writes"><span class="num">§5</span>checkpoints ← checkpoint_writes：下一步的"预写日志"</h2>
+    <p>writes 表的 <code>checkpoint_id</code> 指向<strong>产生这批写操作时所在的 checkpoint</strong>。LangGraph 执行到某 checkpoint 后，task（调 LLM / 执行工具）先把结果<strong>作为 writes 落盘</strong>（崩溃可恢复），推进到下一个 checkpoint 时再合并、升成新 blob 版本。</p>
+    <pre><code class="diagram">ckpt 59d005e3b23a(step-1)  task 1aff8b37: messages[0], branch:to:model_request[1]
+ckpt fdbfff889324(step 0)  task 86345aaf: messages[0], __pregel_tasks[1]
+ckpt 96d611d4a949(step 1)  task 9ac07990: messages[0], branch:to:model_request[1]
+ckpt 44a94fee8182(step 2)  task a4f85ebd: messages[0]</code></pre>
+    <p>对照即懂：step-1 的 write 往 <code>messages</code> 写 → 合并后成为 step 0 的 <code>messages:v2</code>；step 0 的 write → 成为 step 1 的 <code>messages:v3</code>……<code>task_id</code> 区分同一步的不同任务，<code>idx</code> 是同一 task 内多个写的顺序号。</p>
+
+    <h2 class="section" id="relation"><span class="num">§6</span>关联关系全景图</h2>
+    <pre><code class="diagram">                    thread_id = literary:9ec4f893-...7635e622f624
+                                    │ (贯穿三表的总 key)
+        ┌───────────────────────────┼───────────────────────────┐
+        ▼                           ▼                           ▼
+   checkpoints                 checkpoint_blobs            checkpoint_writes
+  (快照索引/链表)                (状态数据仓库)               (预写增量)
+        │                           ▲                           │
+   parent_checkpoint_id             │ 按(channel,version)引用    │ checkpoint_id
+   ↺ 自引用成链              channel_versions 指向 blob        指向"产生它的那个 ckpt"
+        │                           │                           │
+        └──── channel_versions ─────┘                           │
+              (JSONB 清单)                                        │
+                    ▲                                            │
+                    └────────── 合并 writes 升成新 version ◄──────┘</code></pre>
+    <p><strong>串起来：</strong><code>checkpoints</code> 是目录（每步引用哪些 channel 的哪个 version），<code>checkpoint_blobs</code> 是被引用的实际内容（版本化、跨 checkpoint 去重共享），<code>checkpoint_writes</code> 是每步任务产出、尚未合并进下一快照的增量日志。三者用 <code>thread_id</code> 绑定，用 <code>version</code> 号和 <code>checkpoint_id</code> 互相引用。</p>
+
+    <h2 class="section" id="trace"><span class="num">§7</span>一次回合的完整轨迹（decode 实证）</h2>
+    <p>问题：给定盖茨比原文 URL，问 ① 含 <code>Gatsby</code> 的行数 ② 首个含 <code>Daisy</code> 的行号 ③ 两句梗概。下面逐步 decode <code>messages</code> channel 的 BYTEA（<code>type=json</code>，UTF-8 直接可读）。</p>
+
+    <h3 id="step1">§7.1 step 1 · AIMessage 发起 tool_call（messages v3）</h3>
+    <p>模型没直接答，而是请求调工具。<code>content</code> 为空、<code>tool_calls</code> 有值——标准的"请求调工具"形态：</p>
+    <pre><code>[0] HumanMessage   原始问题
+[1] AIMessage
+    ┌─ TOOL_CALL  name: fetch_text_from_url
+    │  id:   <span class="hl-pink">019f2d9d44472bcf9b06c5c4440fc931</span>
+    │  args: {
+    │    "url": "https://www.gutenberg.org/files/64317/64317-0.txt",
+    │    "substrings": ["Gatsby", "Daisy"]
+    │  }
+    └─</code></pre>
+    <p>args 与 UI "参数"面板完全一致，证明 UI 就是从这个 blob 反序列化渲染的。</p>
+
+    <h3 id="step2">§7.2 step 2 · ToolMessage 靠 tool_call_id 对上（messages v4）</h3>
+    <p>请求↔结果的<strong>唯一关联字段是 <code>tool_call_id</code></strong>，不靠顺序，即使并行多个调用也能一一对上：</p>
+    <pre><code class="diagram"> AIMessage.tool_calls[0].id  =  <span class="hl-pink">019f2d9d...0fc931</span>
+                                          ║  完全相同
+ ToolMessage.tool_call_id    =  <span class="hl-pink">019f2d9d...0fc931</span></code></pre>
+    <p>ToolMessage（<code>lc id: [langchain_core, messages, ToolMessage]</code>，<code>status: success</code>）的 <code>content</code> 是工具返回的 JSON：</p>
+    <pre><code>{
+  "ok": true,
+  "totalLines": 6407,
+  "totalCharacters": 270822,
+  "lineStats": [
+    { "substring": "Gatsby", "lineCount": <span class="hl">258</span>, "firstLineNumber": 6, ... },
+    { "substring": "Daisy",  "lineCount": 184, "firstLineNumber": <span class="hl">181</span>,
+      "firstLineText": "Buchanans. Daisy was my second cousin once removed, and I'd known Tom" }
+  ],
+  "note": "Line numbers are 1-based. Substring matching is case-sensitive..."
+}</code></pre>
+
+    <h3 id="step3">§7.3 step 3 · 最终答案藏在 extract-1 的 args 里（messages v5）</h3>
+    <p>关键发现：最终答案<strong>不在 <code>structuredResponse</code> channel</strong>（该 blob decode 出来是 <code>{"lc":2,"type":"undefined"}</code> 占位符），而是藏在一个名为 <code>extract-1</code> 的工具调用的 <code>args</code> 里。messages v5 共 6 条：</p>
+    <pre><code class="diagram">[0] HumanMessage                      原始问题
+[1] AIMessage    tool_call: fetch_text_from_url  (id=019f2d9d…0fc931)
+[2] ToolMessage  ← fetch 返回统计 JSON
+[3] AIMessage    tool_call: <span class="hl-warn">extract-1</span>             (id=019f2d9d…53d7)   ★ 答案在这
+[4] ToolMessage  ← extract-1 回执
+[5] AIMessage    content = "结构化响应已生成。"     收尾</code></pre>
+    <p>回想 <code>agent-runner.ts</code> 的 <code>isStructuredResponseTool</code> 判断 <code>toolName.startsWith("extract-")</code>——就是它。definition 配了 <code>responseFormat</code>，LangChain 把"生成结构化答案"实现成调 <code>extract-1</code> 工具，模型把结构化字段当 <code>args</code> 传入：</p>
+    <pre><code>{
+  "answer": "## 结果\n\n### 1) 包含 Gatsby 的行数\n**258 行**...\n
+             ### 2) ...第 181 行...\n### 3) 两句话中性梗概\n
+             F. Scott Fitzgerald 的《了不起的盖茨比》...",
+  "confidence": 0.99,
+  "keyFacts": [
+    "工具返回 Gatsby 的 lineCount=258（大小写敏感，按行计数）",
+    "工具返回 Daisy 的 firstLineNumber=181，对应行内容为 'Buchanans...'",
+    "文件总行数 6407，总字符数 270822",
+    "匹配规则：大小写敏感，每行最多计一次，行号为 1-based"
+  ],
+  "toolResults": [{ "summary": "成功获取 Gutenberg 纯文本...", "toolName": "..." }]
+}</code></pre>
+    <p><code>args.answer</code> 里的 Markdown 就是 UI 上一字不差的最终答案，也是 <code>getStructuredAnswer(result)</code> 读的 <code>.answer</code> 字段。</p>
+
+    <h3>数据溯源闭环——每个数字都能追</h3>
+    <table>
+      <thead><tr><th>fetch 返回 (step2 ToolMessage)</th><th>extract-1 答案 (step3)</th><th>UI 显示</th></tr></thead>
+      <tbody>
+        <tr><td><code>lineStats[Gatsby].lineCount = 258</code></td><td>answer: "258 行"</td><td>258 行</td></tr>
+        <tr><td><code>lineStats[Daisy].firstLineNumber = 181</code></td><td>answer: "第 181 行"</td><td>第 181 行</td></tr>
+        <tr><td><code>lineStats[Daisy].firstLineText</code></td><td>引用 "Buchanans..."</td><td>引用原句</td></tr>
+        <tr><td><code>totalLines 6407 / 270822 字符</code></td><td>keyFacts / how_you_computed_counts</td><td>—</td></tr>
+      </tbody>
+    </table>
+    <p>模型没编数字——<code>keyFacts</code> 与 <code>how_you_computed_counts</code> 明确写了数据来源，忠实执行了 prompt "不能编、要说明怎么算"的要求。</p>
+
+    <div class="callout warn">
+      <strong>⚠ 值得留意的实现盲区</strong>
+      <p style="margin:8px 0 0;"><code>structuredResponse:v5</code> 这个 channel 持久化的是 <code>undefined</code>——结构化结果没落到该 state channel，而是以 <code>extract-*</code> tool_call args 形式存在于 <code>messages</code> 里。运行时 <code>getStructuredResponse(result)</code> 从内存返回值取，但 checkpoint 里这个 channel 是空的。<strong>若想从数据库直接重建历史答案</strong>（而非靠内存返回值），需 parse <code>messages</code> 里 <code>extract-*</code> 的 tool_call args，不能指望 <code>structuredResponse</code> channel。</p>
+    </div>
+
+    <h2 class="section" id="sql"><span class="num">§8</span>常用查询 SQL</h2>
+    <h3>列出全部 thread 及 checkpoint 数</h3>
+    <pre><code>SELECT thread_id, COUNT(*) AS checkpoint_rows
+FROM checkpoints GROUP BY thread_id ORDER BY thread_id;</code></pre>
+
+    <h3>看某 thread 的 checkpoint 链与版本清单</h3>
+    <pre><code>SELECT RIGHT(checkpoint_id,12) AS ckpt,
+       RIGHT(COALESCE(parent_checkpoint_id,'—'),12) AS parent,
+       metadata->>'step' AS step,
+       checkpoint->'channel_versions' AS channel_versions
+FROM checkpoints
+WHERE thread_id = 'literary:9ec4f893-...7635e622f624'
+ORDER BY checkpoint_id;</code></pre>
+
+    <h3>按 channel_versions 还原某 checkpoint 的完整状态（JOIN blobs）</h3>
+    <pre><code>SELECT b.channel, b.type, b.blob
+FROM checkpoints c
+CROSS JOIN LATERAL jsonb_each_text(c.checkpoint->'channel_versions') AS cv(channel, ver)
+JOIN checkpoint_blobs b
+  ON b.thread_id = c.thread_id
+ AND b.channel   = cv.channel
+ AND b.version   = cv.ver
+WHERE c.checkpoint_id = '...503b5efc4ea5';</code></pre>
+
+    <h3>decode 某个 messages blob（type=json 时）</h3>
+    <pre><code>SELECT convert_from(blob,'UTF8')
+FROM checkpoint_blobs
+WHERE thread_id = 'literary:9ec4f893-...7635e622f624'
+  AND channel = 'messages' AND version = '4';
+-- 管道给 python3/jq 美化即可看到 tool_calls / tool_call_id</code></pre>
+
+    <h2 class="section" id="takeaway"><span class="num">§9</span>结论</h2>
+    <div class="card">
+      <p style="margin:16px 0;">从"用户提问 → 抓原文 → 统计 → 结构化成答案 → 渲染"整条 agent 回合，全部可从这三张 checkpoint 表 + <code>messages</code> channel 的版本演进里完整还原。这就是 LangGraph checkpointer 持久化的价值：</p>
+      <p style="margin:16px 0;"><span class="hl">不只存最终结果，而是存下整个推理轨迹，可回溯、可续跑、可审计每个数字的来源。</span></p>
+      <ul>
+        <li><code>checkpoints</code> = 快照索引 + 时间链（parent 自引用）</li>
+        <li><code>checkpoint_blobs</code> = 版本化状态仓库，跨 checkpoint 去重共享</li>
+        <li><code>checkpoint_writes</code> = 每步的预写增量，合并后升版</li>
+        <li>请求↔结果靠 <code>tool_call_id</code> 缝合，历史靠 <code>messages</code> 版本递增累积</li>
+        <li>三表用 <code>thread_id</code> 绑定，<code>agentId:threadId</code> 前缀隔离多 agent</li>
+      </ul>
+    </div>
+
+    <footer>
+      生成自 myAICanDo 项目对 LangGraph PostgresSaver 的实测分析 · 样本 thread <code class="tid">literary:9ec4f893-9c73-4074-8c6b-7635e622f624</code><br>
+      相关代码：<code>src/lib/agent/core/agent-runner.ts</code> · 建表 DDL：<code>@langchain/langgraph-checkpoint-postgres/dist/migrations.js</code>
+    </footer>
+  </main>
+</div>
+</body>
+</html>
