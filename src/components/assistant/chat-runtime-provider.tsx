@@ -305,11 +305,20 @@ function createAssistantContentBuilder() {
 }
 
 function toToolCallPart(event: Extract<ChatStreamEvent, { type: "tool_call" }>) {
+  const args = toToolArgs(event.args);
+  const displayArgs =
+    event.status === "retrying" && event.retry
+      ? {
+          ...args,
+          __retry: event.retry,
+        }
+      : args;
+
   return {
     type: "tool-call",
     toolCallId: event.toolCallId,
     toolName: event.toolName,
-    args: toToolArgs(event.args) as ToolCallMessagePart["args"],
+    args: displayArgs as ToolCallMessagePart["args"],
     argsText: stringifyToolPayload(event.args),
     ...(event.status === "complete" ? { result: event.result } : {}),
     ...(event.status === "error"

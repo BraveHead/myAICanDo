@@ -547,10 +547,19 @@ function ToolCallPart({
   status,
   toolName,
 }: ToolCallMessagePartProps) {
+  const retryInfo = getToolRetryInfo(args);
   const running = status.type === "running";
   const failed = isError || status.type === "incomplete";
   const Icon = running ? LoaderCircle : failed ? AlertTriangle : CheckCircle2;
-  const statusText = running ? "运行中" : failed ? "失败" : "完成";
+  const statusText =
+    running && retryInfo
+      ? `重试 ${retryInfo.attempt}/${retryInfo.maxRetries}`
+      : running
+        ? "运行中"
+        : failed
+          ? "失败"
+          : "完成";
+  const displayArgs = argsText || removeToolRetryInfo(args);
 
   return (
     <div className="my-3 overflow-hidden rounded-xl border border-[#e7e7e7] bg-[#fafafa] text-sm text-[#202020]">
@@ -568,11 +577,70 @@ function ToolCallPart({
         </span>
       </div>
       <div className="space-y-2 px-3 py-2">
-        <ToolPayload label="参数" value={argsText || args} />
+        {running && retryInfo && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+            第 {retryInfo.attempt} 次执行失败，约{" "}
+            {formatRetryDelay(retryInfo.nextDelayMs)} 后自动重试。
+            {retryInfo.error ? ` 原因：${retryInfo.error}` : ""}
+          </div>
+        )}
+        <ToolPayload label="参数" value={displayArgs} />
         {!running && <ToolPayload label="结果" value={result} />}
       </div>
     </div>
   );
+}
+
+type ToolRetryInfo = {
+  attempt: number;
+  error?: string;
+  maxRetries: number;
+  nextDelayMs: number;
+};
+
+function getToolRetryInfo(args: unknown): ToolRetryInfo | null {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return null;
+  }
+
+  const retry = (args as { __retry?: unknown }).__retry;
+  if (!retry || typeof retry !== "object" || Array.isArray(retry)) {
+    return null;
+  }
+
+  const candidate = retry as Partial<ToolRetryInfo>;
+  if (
+    typeof candidate.attempt !== "number" ||
+    typeof candidate.maxRetries !== "number" ||
+    typeof candidate.nextDelayMs !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    attempt: candidate.attempt,
+    error: typeof candidate.error === "string" ? candidate.error : undefined,
+    maxRetries: candidate.maxRetries,
+    nextDelayMs: candidate.nextDelayMs,
+  };
+}
+
+function removeToolRetryInfo(args: unknown) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return args;
+  }
+
+  const rest = { ...(args as Record<string, unknown>) };
+  delete rest.__retry;
+  return rest;
+}
+
+function formatRetryDelay(delayMs: number) {
+  if (delayMs < 1000) {
+    return `${delayMs}ms`;
+  }
+
+  return `${(delayMs / 1000).toFixed(1)}s`;
 }
 
 function ToolPayload({ label, value }: { label: string; value: unknown }) {

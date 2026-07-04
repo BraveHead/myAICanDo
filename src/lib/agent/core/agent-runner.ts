@@ -1,4 +1,10 @@
-import { createAgent, createMiddleware } from "langchain";
+import {
+  createAgent,
+  createMiddleware,
+  modelRetryMiddleware,
+  toolRetryMiddleware,
+  type AnyAgentMiddleware,
+} from "langchain";
 import { MemorySaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -33,6 +39,15 @@ type AgentCheckpointer = MemorySaver | PostgresSaver;
 let checkpointer: AgentCheckpointer | null = null;
 let checkpointerPromise: Promise<AgentCheckpointer> | null = null;
 const initializedAgentThreads = new Set<string>();
+const AGENT_RETRY_OPTIONS = {
+  maxRetries: 2,
+  initialDelayMs: 600,
+  backoffFactor: 2,
+  maxDelayMs: 5_000,
+  jitter: false,
+  onFailure: "error" as const,
+  retryOn: shouldRetryAgentError,
+};
 
 export async function createConfiguredAgent(
   definition: AgentDefinition,
@@ -54,6 +69,7 @@ export async function createConfiguredAgent(
   };
   const model = createProjectChatModel(modelOptions);
   const agentCheckpointer = await getAgentCheckpointer();
+  const middleware = createAgentMiddleware(onStreamEvent);
 
   return createAgent({
     model,
@@ -63,9 +79,7 @@ export async function createConfiguredAgent(
     ...(definition.responseFormat
       ? { responseFormat: definition.responseFormat }
       : {}),
-    ...(onStreamEvent
-      ? { middleware: [createToolCallStreamingMiddleware(onStreamEvent)] }
-      : {}),
+    ...(middleware.length > 0 ? { middleware } : {}),
   });
 }
 
@@ -205,6 +219,90 @@ function createToolCallStreamingMiddleware(
       }
     },
   });
+}
+
+function createAgentMiddleware(
+  onStreamEvent?: (event: ChatStreamEvent) => void,
+): readonly AnyAgentMiddleware[] {
+  const retryMiddleware = [
+    toolRetryMiddleware(AGENT_RETRY_OPTIONS),
+    modelRetryMiddleware(AGENT_RETRY_OPTIONS),
+  ] satisfies readonly AnyAgentMiddleware[];
+
+  if (!onStreamEvent) {
+    return retryMiddleware;
+  }
+
+  return [
+    createToolCallStreamingMiddleware(onStreamEvent),
+    ...retryMiddleware,
+    createToolRetryStatusMiddleware(onStreamEvent),
+  ];
+}
+
+function createToolRetryStatusMiddleware(
+  onStreamEvent: (event: ChatStreamEvent) => void,
+) {
+  const failedAttempts = new Map<string, number>();
+
+  return createMiddleware({
+    name: "ToolRetryStatusMiddleware",
+    wrapToolCall: async (request, handler) => {
+      const toolName = String(
+        request.toolCall.name || request.tool?.name || "unknown_tool",
+      );
+      const toolCallId =
+        String(request.toolCall.id || `${toolName}-${crypto.randomUUID()}`);
+      const args = request.toolCall.args ?? {};
+
+      if (isStructuredResponseTool(toolName)) {
+        return handler(request);
+      }
+
+      try {
+        const result = await handler(request);
+        failedAttempts.delete(toolCallId);
+        return result;
+      } catch (error) {
+        const normalizedError = toError(error);
+        const attempt = (failedAttempts.get(toolCallId) ?? 0) + 1;
+        failedAttempts.set(toolCallId, attempt);
+
+        if (
+          attempt <= AGENT_RETRY_OPTIONS.maxRetries &&
+          shouldRetryAgentError(normalizedError)
+        ) {
+          onStreamEvent({
+            type: "tool_call",
+            args,
+            retry: {
+              attempt,
+              error: formatUnknownError(normalizedError),
+              maxRetries: AGENT_RETRY_OPTIONS.maxRetries,
+              nextDelayMs: calculateRetryDelay(attempt - 1),
+            },
+            status: "retrying",
+            toolCallId,
+            toolName,
+          });
+        } else {
+          failedAttempts.delete(toolCallId);
+        }
+
+        throw error;
+      }
+    },
+  });
+}
+
+function calculateRetryDelay(retryNumber: number) {
+  const delay =
+    AGENT_RETRY_OPTIONS.backoffFactor === 0
+      ? AGENT_RETRY_OPTIONS.initialDelayMs
+      : AGENT_RETRY_OPTIONS.initialDelayMs *
+        AGENT_RETRY_OPTIONS.backoffFactor ** retryNumber;
+
+  return Math.min(delay, AGENT_RETRY_OPTIONS.maxDelayMs);
 }
 
 async function runWithTimeout<T>(
@@ -383,6 +481,20 @@ function normalizeToolResult(result: unknown) {
 
 function formatUnknownError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function toError(error: unknown) {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function shouldRetryAgentError(error: Error) {
+  const message = error.message.toLowerCase();
+
+  return (
+    error.name !== "AbortError" &&
+    !message.includes("aborted") &&
+    !message.includes("请求已取消")
+  );
 }
 
 function createAsyncQueue<T>() {

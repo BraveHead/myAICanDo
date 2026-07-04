@@ -7,7 +7,13 @@ export type ChatStreamEvent =
       args: unknown;
       error?: string;
       result?: unknown;
-      status: "running" | "complete" | "error";
+      retry?: {
+        attempt: number;
+        error: string;
+        maxRetries: number;
+        nextDelayMs: number;
+      };
+      status: "running" | "retrying" | "complete" | "error";
       toolCallId: string;
       toolName: string;
       type: "tool_call";
