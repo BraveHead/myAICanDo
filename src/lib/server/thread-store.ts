@@ -10,7 +10,7 @@ import type { StoredThread } from "@/lib/thread-types";
 import { getPostgresPool, hasDatabaseUrl } from "./postgres";
 
 type ThreadRow = {
-  id: string;
+  thread_id: string;
   title: string;
   status: "regular";
   agent_id: string | null;
@@ -26,9 +26,16 @@ export async function ensureThreadStore() {
     return;
   }
 
-  setupPromise ??= getPostgresPool().query(`
-    CREATE TABLE IF NOT EXISTS assistant_threads (
-      id TEXT PRIMARY KEY,
+  setupPromise ??= setupAssistantThreadsTable();
+
+  await setupPromise;
+}
+
+async function setupAssistantThreadsTable() {
+  await getPostgresPool().query(`
+    CREATE TABLE IF NOT EXISTS public.assistant_threads (
+      id BIGSERIAL PRIMARY KEY,
+      thread_id TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'regular',
       agent_id TEXT,
@@ -36,9 +43,7 @@ export async function ensureThreadStore() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
-  `).then(() => undefined);
-
-  await setupPromise;
+  `);
 }
 
 export async function listStoredThreads() {
@@ -49,8 +54,8 @@ export async function listStoredThreads() {
   await ensureThreadStore();
 
   const result = await getPostgresPool().query<ThreadRow>(`
-    SELECT id, title, status, agent_id, repository, created_at, updated_at
-    FROM assistant_threads
+    SELECT thread_id, title, status, agent_id, repository, created_at, updated_at
+    FROM public.assistant_threads
     ORDER BY updated_at DESC
   `);
 
@@ -75,9 +80,9 @@ export async function createStoredThread(title = "New Chat") {
 
   await getPostgresPool().query(
     `
-      INSERT INTO assistant_threads (id, title, status, created_at, updated_at)
+      INSERT INTO public.assistant_threads (thread_id, title, status, created_at, updated_at)
       VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (id) DO NOTHING
+      ON CONFLICT (thread_id) DO NOTHING
     `,
     [thread.id, thread.title, thread.status, thread.createdAt, thread.updatedAt],
   );
@@ -100,9 +105,9 @@ export async function upsertStoredThreads(threads: StoredThread[]) {
     for (const thread of threads) {
       await client.query(
         `
-          INSERT INTO assistant_threads (id, title, status, created_at, updated_at)
+          INSERT INTO public.assistant_threads (thread_id, title, status, created_at, updated_at)
           VALUES ($1, $2, $3, $4, $5)
-          ON CONFLICT (id) DO UPDATE
+          ON CONFLICT (thread_id) DO UPDATE
           SET
             title = EXCLUDED.title,
             status = EXCLUDED.status,
@@ -141,13 +146,13 @@ export async function touchThreadFromMessages(
 
   await getPostgresPool().query(
     `
-      INSERT INTO assistant_threads (id, title, status, created_at, updated_at)
+      INSERT INTO public.assistant_threads AS assistant_thread (thread_id, title, status, created_at, updated_at)
       VALUES ($1, $2, 'regular', $3, $3)
-      ON CONFLICT (id) DO UPDATE
+      ON CONFLICT (thread_id) DO UPDATE
       SET
         title = CASE
-          WHEN assistant_threads.title = 'New Chat' THEN EXCLUDED.title
-          ELSE assistant_threads.title
+          WHEN assistant_thread.title = 'New Chat' THEN EXCLUDED.title
+          ELSE assistant_thread.title
         END,
         updated_at = EXCLUDED.updated_at
     `,
@@ -178,8 +183,8 @@ export async function appendThreadMessages({
 
   await getPostgresPool().query(
     `
-      INSERT INTO assistant_threads (
-        id,
+      INSERT INTO public.assistant_threads AS assistant_thread (
+        thread_id,
         title,
         status,
         agent_id,
@@ -188,11 +193,11 @@ export async function appendThreadMessages({
         updated_at
       )
       VALUES ($1, $2, 'regular', $3, $4::jsonb, $5, $5)
-      ON CONFLICT (id) DO UPDATE
+      ON CONFLICT (thread_id) DO UPDATE
       SET
         title = EXCLUDED.title,
         status = EXCLUDED.status,
-        agent_id = COALESCE(EXCLUDED.agent_id, assistant_threads.agent_id),
+        agent_id = COALESCE(EXCLUDED.agent_id, assistant_thread.agent_id),
         repository = EXCLUDED.repository,
         updated_at = EXCLUDED.updated_at
     `,
@@ -208,7 +213,7 @@ export async function getThreadRepository(threadId: string) {
   await ensureThreadStore();
 
   const result = await getPostgresPool().query<Pick<ThreadRow, "repository">>(
-    "SELECT repository FROM assistant_threads WHERE id = $1",
+    "SELECT repository FROM public.assistant_threads WHERE thread_id = $1",
     [threadId],
   );
 
@@ -237,8 +242,8 @@ export async function saveThreadRepository({
 
   await getPostgresPool().query(
     `
-      INSERT INTO assistant_threads (
-        id,
+      INSERT INTO public.assistant_threads (
+        thread_id,
         title,
         status,
         repository,
@@ -246,7 +251,7 @@ export async function saveThreadRepository({
         updated_at
       )
       VALUES ($1, $2, $3, $4::jsonb, $5, $6)
-      ON CONFLICT (id) DO UPDATE
+      ON CONFLICT (thread_id) DO UPDATE
       SET
         title = EXCLUDED.title,
         status = EXCLUDED.status,
@@ -254,7 +259,7 @@ export async function saveThreadRepository({
         updated_at = EXCLUDED.updated_at
     `,
     [
-      nextThread.id,
+      threadId,
       nextThread.title,
       nextThread.status,
       JSON.stringify(repository),
@@ -272,7 +277,7 @@ export async function getThreadAgent(threadId: string) {
   await ensureThreadStore();
 
   const result = await getPostgresPool().query<Pick<ThreadRow, "agent_id">>(
-    "SELECT agent_id FROM assistant_threads WHERE id = $1",
+    "SELECT agent_id FROM public.assistant_threads WHERE thread_id = $1",
     [threadId],
   );
 
@@ -293,9 +298,9 @@ export async function saveThreadAgent(
   const now = new Date().toISOString();
   await getPostgresPool().query(
     `
-      INSERT INTO assistant_threads (id, title, status, agent_id, created_at, updated_at)
+      INSERT INTO public.assistant_threads (thread_id, title, status, agent_id, created_at, updated_at)
       VALUES ($1, 'New Chat', 'regular', $2, $3, $3)
-      ON CONFLICT (id) DO UPDATE
+      ON CONFLICT (thread_id) DO UPDATE
       SET agent_id = EXCLUDED.agent_id, updated_at = EXCLUDED.updated_at
     `,
     [threadId, agent, now],
@@ -334,7 +339,7 @@ export function mergeAgentMessages(
 
 function toStoredThread(row: ThreadRow): StoredThread {
   return {
-    id: row.id,
+    id: row.thread_id,
     title: row.title,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
