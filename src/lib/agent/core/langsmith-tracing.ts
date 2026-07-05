@@ -12,7 +12,10 @@ export const LANGSMITH_PROJECT_URL = `https://smith.langchain.com/o/${LANGSMITH_
 type CreateLangSmithRunConfigOptions = {
   agent?: SupportedAgent;
   modelName: string;
+  route?: string;
+  tenantHashId?: string;
   threadId?: string;
+  userHashId?: string;
 };
 
 export function ensureLangSmithTracingEnv() {
@@ -31,7 +34,10 @@ export function ensureLangSmithTracingEnv() {
 export function createLangSmithRunConfig({
   agent,
   modelName,
+  route = "/api/tenants/[tenantId]/chat",
+  tenantHashId,
   threadId,
+  userHashId,
 }: CreateLangSmithRunConfigOptions): RunnableConfig {
   const tracingEnabled = ensureLangSmithTracingEnv();
   const resolvedAgent = agent ?? "default";
@@ -48,8 +54,10 @@ export function createLangSmithRunConfig({
       app: "my-ai-can-do",
       agent: resolvedAgent,
       model: modelName,
-      route: "/api/chat",
+      route,
+      tenant_hash_id: tenantHashId || undefined,
       thread_id: threadId || undefined,
+      user_hash_id: userHashId || undefined,
       langsmith_project: process.env.LANGSMITH_PROJECT || LANGSMITH_PROJECT_NAME,
       langsmith_project_id: LANGSMITH_PROJECT_ID,
       langsmith_project_url: LANGSMITH_PROJECT_URL,

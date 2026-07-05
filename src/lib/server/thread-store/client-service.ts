@@ -9,14 +9,15 @@ import {
   getThreadRepositoryJson,
   listThreadRows,
   saveThreadRepositoryJson,
+  type ThreadScope,
 } from "./persistence";
 
-export async function listStoredThreads() {
-  const rows = await listThreadRows();
+export async function listStoredThreads(scope: ThreadScope) {
+  const rows = await listThreadRows(scope);
   return rows.map(toStoredThread);
 }
 
-export async function createStoredThread(title = "New Chat") {
+export async function createStoredThread(scope: ThreadScope, title = "New Chat") {
   const now = new Date().toISOString();
   const thread: StoredThread = {
     id: crypto.randomUUID(),
@@ -26,7 +27,7 @@ export async function createStoredThread(title = "New Chat") {
     status: "regular",
   };
 
-  await createThreadRow({
+  await createThreadRow(scope, {
     createdAt: thread.createdAt,
     status: thread.status,
     threadId: thread.id,
@@ -37,19 +38,24 @@ export async function createStoredThread(title = "New Chat") {
   return thread;
 }
 
-export async function getThreadRepository(threadId: string) {
+export async function getThreadRepository(
+  scope: ThreadScope,
+  threadId: string,
+) {
   return (
-    (await getThreadRepositoryJson(threadId)) as
+    (await getThreadRepositoryJson(scope, threadId)) as
       | ExportedMessageRepositoryData
       | null
   );
 }
 
 export async function saveThreadRepository({
+  scope,
   thread,
   threadId,
   repository,
 }: {
+  scope: ThreadScope;
   thread?: StoredThread;
   threadId: string;
   repository: ExportedMessageRepositoryData;
@@ -57,7 +63,7 @@ export async function saveThreadRepository({
   const fallbackThread = createThreadFromRepository(threadId, repository);
   const nextThread = thread ?? fallbackThread;
 
-  await saveThreadRepositoryJson({
+  await saveThreadRepositoryJson(scope, {
     createdAt: nextThread.createdAt,
     repository,
     status: nextThread.status,

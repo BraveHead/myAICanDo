@@ -7,6 +7,7 @@ import { streamConfiguredAgentEvents } from "@/lib/agent/core/agent-runner";
 import { createLangSmithRunConfig } from "@/lib/agent/core/langsmith-tracing";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
 import { encodeChatSseEvent, type ChatStreamEvent } from "@/lib/chat-stream";
+import { authErrorResponse, requireTenantAccess } from "@/lib/server/saas";
 import {
   appendThreadMessages,
   getThreadAgent,
@@ -29,12 +30,27 @@ type ChatRequestBody = {
   agent?: SupportedAgent;
 };
 
+type ChatRouteContext = {
+  params: Promise<{
+    tenantId: string;
+  }>;
+};
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const threadAgentSelections = new Map<string, SupportedAgent>();
 
-export async function POST(request: Request) {
+export async function POST(request: Request, context: ChatRouteContext) {
+  const { tenantId } = await context.params;
+  let access;
+
+  try {
+    access = await requireTenantAccess(tenantId);
+  } catch (error) {
+    return authErrorResponse(error);
+  }
+
   let body: ChatRequestBody;
 
   try {
@@ -80,6 +96,11 @@ export async function POST(request: Request) {
   const modelName = body.model || process.env.OPENAI_MODEL || "gpt-4o-mini";
   const baseURL = process.env.OPENAI_BASE_URL || undefined;
   const threadId = resolveThreadId(body.threadId);
+  const threadScope = {
+    tenantHashId: access.tenantHashId,
+    userHashId: access.userHashId,
+  };
+  const selectionKey = createSelectionKey(threadScope, threadId);
 
   const encoder = new TextEncoder();
   const agentMessages: AgentMessage[] = messages.map((message) => ({
@@ -87,28 +108,31 @@ export async function POST(request: Request) {
     content: message.content,
   }));
   const messagesToAppend = getMessagesToAppend(agentMessages);
-  await touchThreadFromMessages(threadId, agentMessages);
+  await touchThreadFromMessages(threadScope, threadId, agentMessages);
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const persistedAgent = await getThreadAgent(threadId);
+        const persistedAgent = await getThreadAgent(threadScope, threadId);
         const agentDefinition = resolveAgentDefinition({
           agent:
             body.agent ??
             persistedAgent ??
-            threadAgentSelections.get(threadId),
+            threadAgentSelections.get(selectionKey),
           messages: agentMessages,
         });
         if (agentDefinition) {
-          threadAgentSelections.set(threadId, agentDefinition.id);
-          await saveThreadAgent(threadId, agentDefinition.id);
+          threadAgentSelections.set(selectionKey, agentDefinition.id);
+          await saveThreadAgent(threadScope, threadId, agentDefinition.id);
         }
 
         const runConfig = createLangSmithRunConfig({
           agent: agentDefinition?.id,
           modelName,
+          route: "/api/tenants/[tenantId]/chat",
+          tenantHashId: access.tenantHashId,
           threadId,
+          userHashId: access.userHashId,
         });
         const events: AsyncIterable<ChatStreamEvent> =
           agentDefinition !== undefined
@@ -121,6 +145,7 @@ export async function POST(request: Request) {
                 runConfig,
                 signal: request.signal,
                 threadId,
+                threadScope,
               })
             : streamChatModelEvents({
                 model: createProjectChatModel({
@@ -130,6 +155,7 @@ export async function POST(request: Request) {
                 }),
                 messages: await getModelMessages({
                   requestMessages: agentMessages,
+                  scope: threadScope,
                   threadId,
                   usesFullHistory: Array.isArray(body.messages),
                 }),
@@ -156,6 +182,7 @@ export async function POST(request: Request) {
                 content: assistantText,
               },
             ],
+            scope: threadScope,
             threadId,
           });
         }
@@ -185,6 +212,7 @@ export async function POST(request: Request) {
       "Content-Type": "text/event-stream; charset=utf-8",
       "X-Accel-Buffering": "no",
       "X-Thread-Id": threadId,
+      "X-Tenant-Id": access.tenantHashId,
     },
   });
 }
@@ -255,16 +283,21 @@ async function* streamChatModelEvents({
 
 async function getModelMessages({
   requestMessages,
+  scope,
   threadId,
   usesFullHistory,
 }: {
   requestMessages: AgentMessage[];
+  scope: { tenantHashId: string; userHashId: string };
   threadId: string;
   usesFullHistory: boolean;
 }) {
   const messages = usesFullHistory
     ? requestMessages
-    : mergeAgentMessages(await loadThreadAgentMessages(threadId), requestMessages);
+    : mergeAgentMessages(
+        await loadThreadAgentMessages(scope, threadId),
+        requestMessages,
+      );
 
   return messages.map((message) => {
     if (message.role === "system") {
@@ -301,4 +334,11 @@ function normalizeChunkContent(content: unknown) {
       return "";
     })
     .join("");
+}
+
+function createSelectionKey(
+  scope: { tenantHashId: string; userHashId: string },
+  threadId: string,
+) {
+  return `${scope.tenantHashId}:${scope.userHashId}:${threadId}`;
 }

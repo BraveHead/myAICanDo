@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "hash-password": "node scripts/hash-password.mjs",
+    "seed:saas": "node scripts/seed-saas.mjs",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit"
@@ -19,12 +21,14 @@
     "@langchain/langgraph": "^1.4.4",
     "@langchain/langgraph-checkpoint-postgres": "^1.0.4",
     "@langchain/openai": "^1.5.1",
+    "jose": "^6.2.3",
     "langchain": "^1.5.0",
     "lucide-react": "^1.21.0",
     "next": "16.2.9",
     "pg": "^8.22.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "server-only": "^0.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -13,6 +13,7 @@ import {
 import {
   AlertTriangle,
   BarChart3,
+  Building2,
   BookOpen,
   Bot,
   CheckCircle2,
@@ -24,22 +25,25 @@ import {
   PenLine,
   Plus,
   Send,
-  Share,
   Sparkles,
   SunMedium,
   Wrench,
   X,
 } from "lucide-react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createTransientThread,
   getThreadTitle,
+  loadActiveThreadId,
   loadRepositoryFromServer,
   loadThreadsFromServer,
   saveActiveThreadId,
   type StoredThread,
 } from "@/lib/thread-storage";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
+import { getThreadPath } from "@/lib/thread-routes";
 
 type Suggestion = {
   label: string;
@@ -102,35 +106,75 @@ const suggestions: Suggestion[] = [
 
 const modelLabel = process.env.NEXT_PUBLIC_MODEL_LABEL || "GPT-4o Mini";
 
-export function ChatWorkspace() {
+type ChatWorkspaceProps = {
+  initialThreadId?: string;
+  tenantHashId: string;
+};
+
+type SelectThreadOptions = {
+  replace?: boolean;
+  syncUrl?: boolean;
+};
+
+export function ChatWorkspace({
+  initialThreadId,
+  tenantHashId,
+}: ChatWorkspaceProps) {
   return (
     <main className="flex min-h-screen flex-col bg-white text-[#121212]">
       <section className="flex min-h-0 flex-1 p-3 sm:p-4">
         <div className="flex min-h-[calc(100vh-96px)] w-full overflow-hidden rounded-[22px] border border-[#e6e6e6] bg-white shadow-[0_1px_10px_rgba(0,0,0,0.04)]">
-          <ChatWorkspaceContent />
+          <ChatWorkspaceContent
+            initialThreadId={initialThreadId}
+            tenantHashId={tenantHashId}
+          />
         </div>
       </section>
     </main>
   );
 }
 
-function ChatWorkspaceContent() {
+function ChatWorkspaceContent({
+  initialThreadId,
+  tenantHashId,
+}: ChatWorkspaceProps) {
   const aui = useAui();
   const isRunning = useAuiState((state) => state.thread.isRunning);
+  const pathname = usePathname();
+  const router = useRouter();
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const switchingRef = useRef(false);
   const previousRunningRef = useRef(false);
 
-  const selectThread = useCallback((threadId: string | null) => {
-    setActiveThreadId(threadId);
-    saveActiveThreadId(threadId);
-  }, []);
+  const selectThread = useCallback(
+    (threadId: string | null, options: SelectThreadOptions = {}) => {
+      setActiveThreadId(threadId);
+      saveActiveThreadId(tenantHashId, threadId);
+
+      if (!threadId || options.syncUrl === false) {
+        return;
+      }
+
+      const nextPath = getThreadPath(tenantHashId, threadId);
+      if (pathname === nextPath) {
+        return;
+      }
+
+      if (options.replace) {
+        router.replace(nextPath);
+        return;
+      }
+
+      router.push(nextPath);
+    },
+    [pathname, router, tenantHashId],
+  );
 
   const refreshThreads = useCallback(
     async (preferredThreadId: string | null) => {
-      const serverThreads = await loadThreadsFromServer();
+      const serverThreads = await loadThreadsFromServer(tenantHashId);
       if (serverThreads.length === 0) {
         return;
       }
@@ -143,35 +187,63 @@ function ChatWorkspaceContent() {
           ? preferredThreadId
           : serverThreads[0]?.id ?? null;
 
-      selectThread(nextThreadId);
+      selectThread(nextThreadId, { replace: true });
     },
-    [selectThread],
+    [selectThread, tenantHashId],
   );
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const serverThreads = await loadThreadsFromServer();
+      const serverThreads = await loadThreadsFromServer(tenantHashId);
       if (cancelled) {
         return;
       }
 
-      const initialThreads =
-        serverThreads.length > 0 ? serverThreads : [createTransientThread()];
+      const savedThreadId = loadActiveThreadId(tenantHashId);
+      const savedThreadExists =
+        savedThreadId !== null &&
+        serverThreads.some((thread) => thread.id === savedThreadId);
+      const routeThreadExists =
+        initialThreadId !== undefined &&
+        serverThreads.some((thread) => thread.id === initialThreadId);
+
+      let initialThreads = serverThreads;
+      let nextThreadId: string | null = null;
+
+      if (initialThreadId) {
+        nextThreadId = initialThreadId;
+        initialThreads = routeThreadExists
+          ? serverThreads
+          : [
+              createTransientThread({ threadId: initialThreadId }),
+              ...serverThreads,
+            ];
+      } else if (savedThreadExists) {
+        nextThreadId = savedThreadId;
+      } else {
+        nextThreadId = serverThreads[0]?.id ?? null;
+      }
+
+      if (!nextThreadId) {
+        const transientThread = createTransientThread();
+        initialThreads = [transientThread];
+        nextThreadId = transientThread.id;
+      }
 
       if (cancelled) {
         return;
       }
 
       setThreads(initialThreads);
-      selectThread(initialThreads[0]?.id ?? null);
+      selectThread(nextThreadId, { replace: true });
       setHydrated(true);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [selectThread]);
+  }, [initialThreadId, selectThread, tenantHashId]);
 
   useEffect(() => {
     if (!hydrated || !activeThreadId) {
@@ -183,7 +255,10 @@ function ChatWorkspaceContent() {
     aui.thread().reset();
 
     void (async () => {
-      const serverRepository = await loadRepositoryFromServer(activeThreadId);
+      const serverRepository = await loadRepositoryFromServer(
+        tenantHashId,
+        activeThreadId,
+      );
       if (cancelled) {
         return;
       }
@@ -205,7 +280,7 @@ function ChatWorkspaceContent() {
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId, hydrated, aui]);
+  }, [activeThreadId, hydrated, aui, tenantHashId]);
 
   useEffect(() => {
     if (!hydrated || !activeThreadId) {
@@ -289,7 +364,14 @@ function ChatWorkspaceContent() {
       <aside className="hidden w-[252px] shrink-0 flex-col border-r border-[#f0f0f0] bg-[#fcfcfc] p-4 md:flex">
         <div className="mb-8 flex items-center gap-3 px-2 pt-3">
           <Bot size={24} strokeWidth={2.4} />
-          <span className="text-[15px] font-semibold">assistant-ui</span>
+          <span className="min-w-0">
+            <span className="block text-[15px] font-semibold">
+              assistant-ui
+            </span>
+            <span className="block truncate font-mono text-xs text-[#777777]">
+              {tenantHashId}
+            </span>
+          </span>
         </div>
 
         <button
@@ -336,12 +418,19 @@ function ChatWorkspaceContent() {
               {activeThread?.title || "New Chat"}
             </h1>
           </div>
+          <Link
+            className="grid size-8 place-items-center rounded-md text-[#7b7b7b] hover:bg-[#f5f5f5]"
+            href="/switch-tenant"
+            title="切换租户"
+          >
+            <Building2 size={18} />
+          </Link>
           <button
             className="grid size-8 place-items-center rounded-md text-[#7b7b7b] hover:bg-[#f5f5f5]"
             title="Share"
             type="button"
           >
-            <Share size={18} />
+            <Sparkles size={18} />
           </button>
         </div>
 

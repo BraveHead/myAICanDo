@@ -19,6 +19,7 @@ import {
   loadThreadAgentMessages,
   mergeAgentMessages,
 } from "@/lib/server/thread-store";
+import type { ThreadScope } from "@/lib/server/thread-store/persistence";
 import type {
   AgentDefinition,
   AgentMessage,
@@ -32,6 +33,7 @@ type StreamConfiguredAgentTextOptions = CreateConfiguredAgentOptions & {
   runConfig?: RunnableConfig;
   signal: AbortSignal;
   threadId?: string;
+  threadScope?: ThreadScope;
 };
 
 type AgentCheckpointer = MemorySaver | PostgresSaver;
@@ -90,6 +92,7 @@ export async function* streamConfiguredAgentEvents({
   runConfig,
   signal,
   threadId,
+  threadScope,
   ...modelOptions
 }: StreamConfiguredAgentTextOptions) {
   const queue = createAsyncQueue<ChatStreamEvent>();
@@ -102,14 +105,15 @@ export async function* streamConfiguredAgentEvents({
   });
   const agentCheckpointer = await getAgentCheckpointer();
   const agentThreadId = threadId
-    ? createAgentThreadId(definition.id, threadId)
+    ? createAgentThreadId(definition.id, threadId, threadScope)
     : undefined;
   const invocationMessages =
-    agentThreadId && threadId
+    agentThreadId && threadId && threadScope
       ? await getMessagesForCheckpointedRun({
           agentThreadId,
           checkpointer: agentCheckpointer,
           messages,
+          scope: threadScope,
           threadId,
         })
       : messages;
@@ -372,19 +376,27 @@ async function createAgentCheckpointer() {
   return postgresSaver;
 }
 
-function createAgentThreadId(agentId: AgentDefinition["id"], threadId: string) {
-  return `${agentId}:${threadId}`;
+function createAgentThreadId(
+  agentId: AgentDefinition["id"],
+  threadId: string,
+  scope?: ThreadScope,
+) {
+  return scope
+    ? `${agentId}:${scope.tenantHashId}:${scope.userHashId}:${threadId}`
+    : `${agentId}:${threadId}`;
 }
 
 async function getMessagesForCheckpointedRun({
   agentThreadId,
   checkpointer,
   messages,
+  scope,
   threadId,
 }: {
   agentThreadId: string;
   checkpointer: AgentCheckpointer;
   messages: AgentMessage[];
+  scope: ThreadScope;
   threadId: string;
 }) {
   const checkpointExists =
@@ -402,7 +414,10 @@ async function getMessagesForCheckpointedRun({
       return messages;
     }
 
-    return mergeAgentMessages(await loadThreadAgentMessages(threadId), messages);
+    return mergeAgentMessages(
+      await loadThreadAgentMessages(scope, threadId),
+      messages,
+    );
   }
 
   const latestUserMessage = messages.findLast(

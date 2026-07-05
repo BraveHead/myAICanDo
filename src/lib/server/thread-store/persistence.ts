@@ -1,5 +1,10 @@
 import { getPostgresPool, hasDatabaseUrl } from "../postgres";
 
+export type ThreadScope = {
+  tenantHashId: string;
+  userHashId: string;
+};
+
 export type ThreadRow = {
   thread_id: string;
   title: string;
@@ -31,10 +36,14 @@ export async function ensureThreadStore() {
 }
 
 async function setupAssistantThreadsTable() {
-  await getPostgresPool().query(`
+  const pool = getPostgresPool();
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS public.assistant_threads (
       id BIGSERIAL PRIMARY KEY,
-      thread_id TEXT NOT NULL UNIQUE,
+      tenant_hash_id TEXT NOT NULL,
+      user_hash_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'regular',
       agent_id TEXT,
@@ -43,139 +52,49 @@ async function setupAssistantThreadsTable() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  await pool.query(`
+    ALTER TABLE public.assistant_threads
+    ADD COLUMN IF NOT EXISTS tenant_hash_id TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE public.assistant_threads
+    ADD COLUMN IF NOT EXISTS user_hash_id TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE public.assistant_threads
+    DROP CONSTRAINT IF EXISTS assistant_threads_thread_id_key
+  `);
+  await pool.query(`
+    DROP INDEX IF EXISTS public.assistant_threads_thread_id_key
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS assistant_threads_scope_thread_idx
+    ON public.assistant_threads (tenant_hash_id, user_hash_id, thread_id)
+  `);
 }
 
-export async function listThreadRows() {
+export async function listThreadRows(scope: ThreadScope) {
   if (!hasDatabaseUrl()) {
     return [];
   }
 
   await ensureThreadStore();
 
-  const result = await getPostgresPool().query<ThreadRow>(`
-    SELECT thread_id, title, status, agent_id, repository, created_at, updated_at
-    FROM public.assistant_threads
-    ORDER BY updated_at DESC
-  `);
+  const result = await getPostgresPool().query<ThreadRow>(
+    `
+      SELECT thread_id, title, status, agent_id, repository, created_at, updated_at
+      FROM public.assistant_threads
+      WHERE tenant_hash_id = $1 AND user_hash_id = $2
+      ORDER BY updated_at DESC
+    `,
+    [scope.tenantHashId, scope.userHashId],
+  );
 
   return result.rows;
 }
 
-export async function createThreadRow(thread: ThreadInput) {
-  if (!hasDatabaseUrl()) {
-    return;
-  }
-
-  await ensureThreadStore();
-
-  await getPostgresPool().query(
-    `
-      INSERT INTO public.assistant_threads (thread_id, title, status, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (thread_id) DO NOTHING
-    `,
-    [
-      thread.threadId,
-      thread.title,
-      thread.status,
-      thread.createdAt,
-      thread.updatedAt,
-    ],
-  );
-}
-
-export async function touchThreadRow({
-  threadId,
-  title,
-  updatedAt,
-}: {
-  threadId: string;
-  title: string;
-  updatedAt: string;
-}) {
-  if (!hasDatabaseUrl()) {
-    return;
-  }
-
-  await ensureThreadStore();
-
-  await getPostgresPool().query(
-    `
-      INSERT INTO public.assistant_threads AS assistant_thread (thread_id, title, status, created_at, updated_at)
-      VALUES ($1, $2, 'regular', $3, $3)
-      ON CONFLICT (thread_id) DO UPDATE
-      SET
-        title = CASE
-          WHEN assistant_thread.title = 'New Chat' THEN EXCLUDED.title
-          ELSE assistant_thread.title
-        END,
-        updated_at = EXCLUDED.updated_at
-    `,
-    [threadId, title, updatedAt],
-  );
-}
-
-export async function saveThreadMessagesRow({
-  agentId,
-  repository,
-  threadId,
-  title,
-  updatedAt,
-}: {
-  agentId?: string | null;
-  repository: unknown;
-  threadId: string;
-  title: string;
-  updatedAt: string;
-}) {
-  if (!hasDatabaseUrl()) {
-    return;
-  }
-
-  await ensureThreadStore();
-
-  await getPostgresPool().query(
-    `
-      INSERT INTO public.assistant_threads AS assistant_thread (
-        thread_id,
-        title,
-        status,
-        agent_id,
-        repository,
-        created_at,
-        updated_at
-      )
-      VALUES ($1, $2, 'regular', $3, $4::jsonb, $5, $5)
-      ON CONFLICT (thread_id) DO UPDATE
-      SET
-        title = EXCLUDED.title,
-        status = EXCLUDED.status,
-        agent_id = COALESCE(EXCLUDED.agent_id, assistant_thread.agent_id),
-        repository = EXCLUDED.repository,
-        updated_at = EXCLUDED.updated_at
-    `,
-    [threadId, title, agentId ?? null, JSON.stringify(repository), updatedAt],
-  );
-}
-
-export async function getThreadRepositoryJson(threadId: string) {
-  if (!hasDatabaseUrl()) {
-    return null;
-  }
-
-  await ensureThreadStore();
-
-  const result = await getPostgresPool().query<Pick<ThreadRow, "repository">>(
-    "SELECT repository FROM public.assistant_threads WHERE thread_id = $1",
-    [threadId],
-  );
-
-  return result.rows[0]?.repository ?? null;
-}
-
-export async function saveThreadRepositoryJson(thread: ThreadInput & {
-  repository: unknown;
-}) {
+export async function createThreadRow(scope: ThreadScope, thread: ThreadInput) {
   if (!hasDatabaseUrl()) {
     return;
   }
@@ -185,6 +104,166 @@ export async function saveThreadRepositoryJson(thread: ThreadInput & {
   await getPostgresPool().query(
     `
       INSERT INTO public.assistant_threads (
+        tenant_hash_id,
+        user_hash_id,
+        thread_id,
+        title,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (tenant_hash_id, user_hash_id, thread_id) DO NOTHING
+    `,
+    [
+      scope.tenantHashId,
+      scope.userHashId,
+      thread.threadId,
+      thread.title,
+      thread.status,
+      thread.createdAt,
+      thread.updatedAt,
+    ],
+  );
+}
+
+export async function touchThreadRow(
+  scope: ThreadScope,
+  {
+    threadId,
+    title,
+    updatedAt,
+  }: {
+    threadId: string;
+    title: string;
+    updatedAt: string;
+  },
+) {
+  if (!hasDatabaseUrl()) {
+    return;
+  }
+
+  await ensureThreadStore();
+
+  await getPostgresPool().query(
+    `
+      INSERT INTO public.assistant_threads AS assistant_thread (
+        tenant_hash_id,
+        user_hash_id,
+        thread_id,
+        title,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, 'regular', $5, $5)
+      ON CONFLICT (tenant_hash_id, user_hash_id, thread_id) DO UPDATE
+      SET
+        title = CASE
+          WHEN assistant_thread.title = 'New Chat' THEN EXCLUDED.title
+          ELSE assistant_thread.title
+        END,
+        updated_at = EXCLUDED.updated_at
+    `,
+    [scope.tenantHashId, scope.userHashId, threadId, title, updatedAt],
+  );
+}
+
+export async function saveThreadMessagesRow(
+  scope: ThreadScope,
+  {
+    agentId,
+    repository,
+    threadId,
+    title,
+    updatedAt,
+  }: {
+    agentId?: string | null;
+    repository: unknown;
+    threadId: string;
+    title: string;
+    updatedAt: string;
+  },
+) {
+  if (!hasDatabaseUrl()) {
+    return;
+  }
+
+  await ensureThreadStore();
+
+  await getPostgresPool().query(
+    `
+      INSERT INTO public.assistant_threads AS assistant_thread (
+        tenant_hash_id,
+        user_hash_id,
+        thread_id,
+        title,
+        status,
+        agent_id,
+        repository,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, 'regular', $5, $6::jsonb, $7, $7)
+      ON CONFLICT (tenant_hash_id, user_hash_id, thread_id) DO UPDATE
+      SET
+        title = EXCLUDED.title,
+        status = EXCLUDED.status,
+        agent_id = COALESCE(EXCLUDED.agent_id, assistant_thread.agent_id),
+        repository = EXCLUDED.repository,
+        updated_at = EXCLUDED.updated_at
+    `,
+    [
+      scope.tenantHashId,
+      scope.userHashId,
+      threadId,
+      title,
+      agentId ?? null,
+      JSON.stringify(repository),
+      updatedAt,
+    ],
+  );
+}
+
+export async function getThreadRepositoryJson(
+  scope: ThreadScope,
+  threadId: string,
+) {
+  if (!hasDatabaseUrl()) {
+    return null;
+  }
+
+  await ensureThreadStore();
+
+  const result = await getPostgresPool().query<Pick<ThreadRow, "repository">>(
+    `
+      SELECT repository
+      FROM public.assistant_threads
+      WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND thread_id = $3
+    `,
+    [scope.tenantHashId, scope.userHashId, threadId],
+  );
+
+  return result.rows[0]?.repository ?? null;
+}
+
+export async function saveThreadRepositoryJson(
+  scope: ThreadScope,
+  thread: ThreadInput & {
+    repository: unknown;
+  },
+) {
+  if (!hasDatabaseUrl()) {
+    return;
+  }
+
+  await ensureThreadStore();
+
+  await getPostgresPool().query(
+    `
+      INSERT INTO public.assistant_threads (
+        tenant_hash_id,
+        user_hash_id,
         thread_id,
         title,
         status,
@@ -192,8 +271,8 @@ export async function saveThreadRepositoryJson(thread: ThreadInput & {
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3, $4::jsonb, $5, $6)
-      ON CONFLICT (thread_id) DO UPDATE
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+      ON CONFLICT (tenant_hash_id, user_hash_id, thread_id) DO UPDATE
       SET
         title = EXCLUDED.title,
         status = EXCLUDED.status,
@@ -201,6 +280,8 @@ export async function saveThreadRepositoryJson(thread: ThreadInput & {
         updated_at = EXCLUDED.updated_at
     `,
     [
+      scope.tenantHashId,
+      scope.userHashId,
       thread.threadId,
       thread.title,
       thread.status,
@@ -211,7 +292,7 @@ export async function saveThreadRepositoryJson(thread: ThreadInput & {
   );
 }
 
-export async function getThreadAgentId(threadId: string) {
+export async function getThreadAgentId(scope: ThreadScope, threadId: string) {
   if (!hasDatabaseUrl()) {
     return undefined;
   }
@@ -219,22 +300,29 @@ export async function getThreadAgentId(threadId: string) {
   await ensureThreadStore();
 
   const result = await getPostgresPool().query<Pick<ThreadRow, "agent_id">>(
-    "SELECT agent_id FROM public.assistant_threads WHERE thread_id = $1",
-    [threadId],
+    `
+      SELECT agent_id
+      FROM public.assistant_threads
+      WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND thread_id = $3
+    `,
+    [scope.tenantHashId, scope.userHashId, threadId],
   );
 
   return result.rows[0]?.agent_id ?? undefined;
 }
 
-export async function saveThreadAgentId({
-  agentId,
-  threadId,
-  updatedAt,
-}: {
-  agentId: string;
-  threadId: string;
-  updatedAt: string;
-}) {
+export async function saveThreadAgentId(
+  scope: ThreadScope,
+  {
+    agentId,
+    threadId,
+    updatedAt,
+  }: {
+    agentId: string;
+    threadId: string;
+    updatedAt: string;
+  },
+) {
   if (!hasDatabaseUrl()) {
     return;
   }
@@ -243,11 +331,20 @@ export async function saveThreadAgentId({
 
   await getPostgresPool().query(
     `
-      INSERT INTO public.assistant_threads (thread_id, title, status, agent_id, created_at, updated_at)
-      VALUES ($1, 'New Chat', 'regular', $2, $3, $3)
-      ON CONFLICT (thread_id) DO UPDATE
+      INSERT INTO public.assistant_threads (
+        tenant_hash_id,
+        user_hash_id,
+        thread_id,
+        title,
+        status,
+        agent_id,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, 'New Chat', 'regular', $4, $5, $5)
+      ON CONFLICT (tenant_hash_id, user_hash_id, thread_id) DO UPDATE
       SET agent_id = EXCLUDED.agent_id, updated_at = EXCLUDED.updated_at
     `,
-    [threadId, agentId, updatedAt],
+    [scope.tenantHashId, scope.userHashId, threadId, agentId, updatedAt],
   );
 }

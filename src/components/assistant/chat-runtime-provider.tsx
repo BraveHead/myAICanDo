@@ -21,7 +21,10 @@ type ApiMessage = {
   content: string;
 };
 
-export function ChatRuntimeProvider({ children }: PropsWithChildren) {
+export function ChatRuntimeProvider({
+  children,
+  tenantHashId,
+}: PropsWithChildren<{ tenantHashId: string }>) {
   const adapter = useMemo<ChatModelAdapter>(
     () => ({
       async *run({ messages, abortSignal, unstable_threadId, runConfig }) {
@@ -32,7 +35,9 @@ export function ChatRuntimeProvider({ children }: PropsWithChildren) {
           throw new Error("没有可发送的用户消息。");
         }
 
-        const response = await fetch("/api/chat", {
+        const response = await fetch(
+          `/api/tenants/${encodeURIComponent(tenantHashId)}/chat`,
+          {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -44,10 +49,11 @@ export function ChatRuntimeProvider({ children }: PropsWithChildren) {
                 ? runConfig.custom.model
                 : undefined,
             agent: getSupportedAgent(runConfig.custom?.agent),
-            threadId: loadActiveThreadId() ?? unstable_threadId,
+            threadId: loadActiveThreadId(tenantHashId) ?? unstable_threadId,
           }),
           signal: abortSignal,
-        });
+          },
+        );
 
         if (!response.ok) {
           throw new Error(await readErrorMessage(response));
@@ -94,7 +100,7 @@ export function ChatRuntimeProvider({ children }: PropsWithChildren) {
         }
       },
     }),
-    [],
+    [tenantHashId],
   );
   const runtime = useLocalRuntime(adapter);
 

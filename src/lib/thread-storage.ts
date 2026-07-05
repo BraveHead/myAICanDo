@@ -6,15 +6,21 @@ import type { StoredThread } from "@/lib/thread-types";
 
 export type { StoredThread } from "@/lib/thread-types";
 
-let activeThreadId: string | null = null;
+const activeThreadIds = new Map<string, string | null>();
 
-export function createTransientThread(title = "New Chat") {
-  return createClientThread(title);
+export function createTransientThread({
+  threadId,
+  title = "New Chat",
+}: {
+  threadId?: string;
+  title?: string;
+} = {}) {
+  return createClientThread(title, threadId);
 }
 
-export async function loadThreadsFromServer() {
+export async function loadThreadsFromServer(tenantHashId: string) {
   try {
-    const response = await fetch("/api/threads", {
+    const response = await fetch(getTenantApiPath(tenantHashId, "/threads"), {
       cache: "no-store",
     });
     if (!response.ok) {
@@ -28,19 +34,28 @@ export async function loadThreadsFromServer() {
   }
 }
 
-export function loadActiveThreadId() {
-  return activeThreadId;
+export function loadActiveThreadId(tenantHashId: string) {
+  return activeThreadIds.get(tenantHashId) ?? null;
 }
 
-export function saveActiveThreadId(threadId: string | null) {
-  activeThreadId = threadId;
+export function saveActiveThreadId(
+  tenantHashId: string,
+  threadId: string | null,
+) {
+  activeThreadIds.set(tenantHashId, threadId);
 }
 
-export async function loadRepositoryFromServer(threadId: string) {
+export async function loadRepositoryFromServer(
+  tenantHashId: string,
+  threadId: string,
+) {
   try {
-    const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
-      cache: "no-store",
-    });
+    const response = await fetch(
+      getTenantApiPath(tenantHashId, `/threads/${encodeURIComponent(threadId)}`),
+      {
+        cache: "no-store",
+      },
+    );
     if (!response.ok) {
       return null;
     }
@@ -84,11 +99,11 @@ function reviveRepository(repository: ExportedMessageRepository) {
   };
 }
 
-function createClientThread(title: string): StoredThread {
+function createClientThread(title: string, threadId = createId()): StoredThread {
   const now = new Date().toISOString();
 
   return {
-    id: createId(),
+    id: threadId,
     title,
     createdAt: now,
     updatedAt: now,
@@ -102,4 +117,8 @@ function createId() {
   }
 
   return `thread-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getTenantApiPath(tenantHashId: string, path: string) {
+  return `/api/tenants/${encodeURIComponent(tenantHashId)}${path}`;
 }

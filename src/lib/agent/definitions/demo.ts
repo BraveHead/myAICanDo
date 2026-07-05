@@ -13,7 +13,7 @@ const getCurrentTimeTool = tool(() => new Date().toISOString(), {
 /**
  * 最小 demo agent 定义。
  *
- * 接入项目现有的 agent 管线（/api/chat → agent-runner），
+ * 接入项目现有的 agent 管线（/api/tenants/[tenantId]/chat → agent-runner），
  * 因此点击默认问题后会进入真实会话线程，可以继续追问。
  */
 export const demoAgentDefinition = {
