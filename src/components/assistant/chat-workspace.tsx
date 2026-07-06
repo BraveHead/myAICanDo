@@ -18,6 +18,7 @@ import {
   Bot,
   CheckCircle2,
   Code2,
+  FolderSearch,
   Lightbulb,
   LoaderCircle,
   Mic,
@@ -81,6 +82,12 @@ const suggestions: Suggestion[] = [
     icon: BookOpen,
     prompt: gatsbyPrompt,
     agent: "literary",
+  },
+  {
+    label: "Files",
+    icon: FolderSearch,
+    prompt: "请列出当前沙盒目录，并说明可以读取哪些文件。",
+    agent: "filesystem",
   },
   {
     label: "Code",

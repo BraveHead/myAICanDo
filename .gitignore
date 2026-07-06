@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/var/agent-files
 
 # next.js
 /.next/

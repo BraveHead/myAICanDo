@@ -5,14 +5,16 @@ import {
 } from "../shared/agent-ids";
 import type { AgentDefinition, AgentMessage } from "./agent-definition";
 import { demoAgentDefinition } from "../definitions/demo";
+import { filesystemAgentDefinition } from "../definitions/filesystem";
 import { literaryAgentDefinition } from "../definitions/literary";
 import { weatherAgentDefinition } from "../definitions/weather";
 
-const agentDefinitions = {
+const agentDefinitions: Record<SupportedAgent, AgentDefinition> = {
   weather: weatherAgentDefinition,
   literary: literaryAgentDefinition,
+  filesystem: filesystemAgentDefinition,
   demo: demoAgentDefinition,
-} satisfies Record<SupportedAgent, AgentDefinition>;
+};
 
 export function getAgentDefinition(agent: unknown) {
   if (!isSupportedAgent(agent)) {

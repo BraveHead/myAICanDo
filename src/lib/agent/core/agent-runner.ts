@@ -23,6 +23,7 @@ import type { ThreadScope } from "@/lib/server/thread-store/persistence";
 import type {
   AgentDefinition,
   AgentMessage,
+  AgentToolContext,
   CreateConfiguredAgentOptions,
 } from "./agent-definition";
 
@@ -37,6 +38,22 @@ type StreamConfiguredAgentTextOptions = CreateConfiguredAgentOptions & {
 };
 
 type AgentCheckpointer = MemorySaver | PostgresSaver;
+type ToolCallStreamEvent = Extract<ChatStreamEvent, { type: "tool_call" }>;
+type StructuredAgentFallbackResponse = {
+  answer: string;
+  confidence: number;
+  keyFacts: string[];
+  toolResults: Array<{
+    summary: string;
+    toolName: string;
+  }>;
+};
+type FilesystemToolSummary = {
+  errorCode?: string;
+  event: ToolCallStreamEvent;
+  isError: boolean;
+  summary: string;
+};
 
 let checkpointer: AgentCheckpointer | null = null;
 let checkpointerPromise: Promise<AgentCheckpointer> | null = null;
@@ -50,6 +67,8 @@ const AGENT_RETRY_OPTIONS = {
   onFailure: "error" as const,
   retryOn: shouldRetryAgentError,
 };
+const FALLBACK_FILE_CONTENT_LIMIT = 4_000;
+const FALLBACK_SEARCH_MATCH_LIMIT = 20;
 
 export async function createConfiguredAgent(
   definition: AgentDefinition,
@@ -58,8 +77,12 @@ export async function createConfiguredAgent(
     baseURL,
     modelName,
     onStreamEvent,
+    threadId,
+    threadScope,
   }: CreateConfiguredAgentOptions & {
     onStreamEvent?: (event: ChatStreamEvent) => void;
+    threadId?: string;
+    threadScope?: ThreadScope;
   },
 ) {
   const modelOptions: CreateProjectChatModelOptions = {
@@ -72,10 +95,14 @@ export async function createConfiguredAgent(
   const model = createProjectChatModel(modelOptions);
   const agentCheckpointer = await getAgentCheckpointer();
   const middleware = createAgentMiddleware(onStreamEvent);
+  const tools = resolveAgentTools(definition, {
+    threadId,
+    threadScope,
+  });
 
   return createAgent({
     model,
-    tools: definition.tools,
+    tools,
     systemPrompt: definition.systemPrompt,
     checkpointer: agentCheckpointer,
     ...(definition.responseFormat
@@ -96,12 +123,21 @@ export async function* streamConfiguredAgentEvents({
   ...modelOptions
 }: StreamConfiguredAgentTextOptions) {
   const queue = createAsyncQueue<ChatStreamEvent>();
+  let completedToolCallCount = 0;
+  const completedToolCalls: ToolCallStreamEvent[] = [];
   const agent = await createConfiguredAgent(definition, {
     ...modelOptions,
     onStreamEvent: (event) => {
+      if (event.type === "tool_call" && event.status === "complete") {
+        completedToolCallCount += 1;
+        completedToolCalls.push(event);
+      }
+
       onStreamEvent?.(event);
       queue.push(event);
     },
+    threadId,
+    threadScope,
   });
   const agentCheckpointer = await getAgentCheckpointer();
   const agentThreadId = threadId
@@ -117,45 +153,91 @@ export async function* streamConfiguredAgentEvents({
           threadId,
         })
       : messages;
-  void runWithTimeout(
-    (timeoutSignal) =>
-      agent.invoke(
-        { messages: invocationMessages },
-        {
-          ...runConfig,
-          configurable: {
-            ...runConfig?.configurable,
-            ...(agentThreadId ? { thread_id: agentThreadId } : {}),
-          },
-          signal: timeoutSignal,
-          recursionLimit: definition.recursionLimit ?? 8,
+  const invokeAgent = (timeoutSignal: AbortSignal) =>
+    agent.invoke(
+      { messages: invocationMessages },
+      {
+        ...runConfig,
+        configurable: {
+          ...runConfig?.configurable,
+          ...(agentThreadId ? { thread_id: agentThreadId } : {}),
         },
-      ),
-    {
+        signal: timeoutSignal,
+        recursionLimit: definition.recursionLimit ?? 8,
+      },
+    );
+  const runAgent = () =>
+    runWithTimeout(invokeAgent, {
       parentSignal: signal,
       timeoutMs: definition.modelOptions?.timeout ?? DEFAULT_MODEL_TIMEOUT,
-    },
-  )
+    });
+  const pushAgentResult = (result: Awaited<ReturnType<typeof invokeAgent>>) => {
+    if (agentThreadId) {
+      initializedAgentThreads.add(agentThreadId);
+    }
+
+    const lastMessage = result.messages.at(-1);
+    const structuredResponse = getStructuredResponse(result);
+    const text =
+      getStructuredAnswer(structuredResponse) ??
+      normalizeMessageContent(lastMessage?.content);
+
+    if (text) {
+      queue.push({ type: "text_delta", text });
+    }
+    if (structuredResponse !== undefined) {
+      queue.push({ type: "structured_response", response: structuredResponse });
+    }
+  };
+  const pushToolResultFallback = () => {
+    const fallback = createAgentToolResultFallback(definition, completedToolCalls);
+    if (!fallback) {
+      return false;
+    }
+
+    if (agentThreadId) {
+      initializedAgentThreads.add(agentThreadId);
+    }
+
+    queue.push({ type: "text_delta", text: fallback.answer });
+    queue.push({ type: "structured_response", response: fallback });
+    queue.close();
+    return true;
+  };
+
+  void runAgent()
     .then((result) => {
-      if (agentThreadId) {
-        initializedAgentThreads.add(agentThreadId);
-      }
-
-      const lastMessage = result.messages.at(-1);
-      const structuredResponse = getStructuredResponse(result);
-      const text =
-        getStructuredAnswer(structuredResponse) ??
-        normalizeMessageContent(lastMessage?.content);
-
-      if (text) {
-        queue.push({ type: "text_delta", text });
-      }
-      if (structuredResponse !== undefined) {
-        queue.push({ type: "structured_response", response: structuredResponse });
-      }
+      pushAgentResult(result);
       queue.close();
     })
-    .catch((error: unknown) => {
+    .catch(async (error: unknown) => {
+      // Tool results may already be checkpointed when the final model call fails;
+      // one resume lets LangGraph finish from that persisted state.
+      if (
+        agentThreadId &&
+        completedToolCallCount > 0 &&
+        !signal.aborted &&
+        shouldRetryAgentError(toError(error))
+      ) {
+        try {
+          const result = await runAgent();
+          pushAgentResult(result);
+          queue.close();
+          return;
+        } catch (resumeError) {
+          if (pushToolResultFallback()) {
+            return;
+          }
+
+          queue.fail(resumeError);
+          return;
+        }
+      }
+
+      if (pushToolResultFallback()) {
+        return;
+      }
+
       queue.fail(error);
     });
 
@@ -172,6 +254,15 @@ export async function* streamConfiguredAgentText(
       yield event.text;
     }
   }
+}
+
+function resolveAgentTools(
+  definition: AgentDefinition,
+  context: AgentToolContext,
+) {
+  return typeof definition.tools === "function"
+    ? definition.tools(context)
+    : definition.tools;
 }
 
 function createToolCallStreamingMiddleware(
@@ -470,6 +561,319 @@ function getStructuredAnswer(structuredResponse: unknown) {
 
   const answer = (structuredResponse as { answer?: unknown }).answer;
   return typeof answer === "string" && answer.trim() ? answer : undefined;
+}
+
+function createAgentToolResultFallback(
+  definition: AgentDefinition,
+  completedToolCalls: ToolCallStreamEvent[],
+): StructuredAgentFallbackResponse | null {
+  if (definition.id !== "filesystem" || completedToolCalls.length === 0) {
+    return null;
+  }
+
+  const summaries = getUniqueToolCalls(completedToolCalls)
+    .map(createFilesystemToolSummary)
+    .filter((summary): summary is FilesystemToolSummary => Boolean(summary));
+  const visibleSummaries = getVisibleFilesystemSummaries(summaries);
+
+  if (visibleSummaries.length === 0) {
+    return null;
+  }
+
+  return {
+    answer: visibleSummaries.map((entry) => entry.summary).join("\n\n"),
+    confidence: 1,
+    keyFacts: visibleSummaries.map((entry) => entry.summary),
+    toolResults: visibleSummaries.map((entry) => ({
+      summary: entry.summary,
+      toolName: entry.event.toolName,
+    })),
+  };
+}
+
+function getUniqueToolCalls(completedToolCalls: ToolCallStreamEvent[]) {
+  const latestByToolAndArgs = new Map<string, ToolCallStreamEvent>();
+
+  for (const event of completedToolCalls) {
+    latestByToolAndArgs.set(createToolCallKey(event), event);
+  }
+
+  return Array.from(latestByToolAndArgs.values()).sort(
+    compareFilesystemToolCalls,
+  );
+}
+
+function createFilesystemToolSummary(
+  event: ToolCallStreamEvent,
+): FilesystemToolSummary | null {
+  const content = parseToolJsonContent(event.result);
+  if (!isRecord(content)) {
+    return null;
+  }
+
+  if (isToolErrorContent(content)) {
+    return {
+      errorCode: content.error.code,
+      event,
+      isError: true,
+      summary: summarizeFilesystemToolError(event, content.error),
+    };
+  }
+
+  let summary: string | null = null;
+  if (event.toolName === "list_filesystem_directory") {
+    summary = summarizeDirectoryListing(content);
+  }
+
+  if (event.toolName === "read_filesystem_file") {
+    summary = summarizeReadFile(content);
+  }
+
+  if (event.toolName === "search_filesystem_text") {
+    summary = summarizeTextSearch(content);
+  }
+
+  return summary
+    ? {
+        event,
+        isError: false,
+        summary,
+      }
+    : null;
+}
+
+function getVisibleFilesystemSummaries(summaries: FilesystemToolSummary[]) {
+  const successfulSummaries = summaries.filter((summary) => !summary.isError);
+  if (successfulSummaries.length === 0) {
+    return summaries;
+  }
+
+  return [
+    ...successfulSummaries,
+    ...summaries.filter(
+      (summary) =>
+        summary.isError &&
+        summary.errorCode !== "not_file" &&
+        summary.errorCode !== "not_directory",
+    ),
+  ];
+}
+
+function createToolCallKey(event: ToolCallStreamEvent) {
+  return `${event.toolName}:${stringifyToolArgs(event.args)}`;
+}
+
+function stringifyToolArgs(args: unknown) {
+  if (!isRecord(args)) {
+    return JSON.stringify(args) ?? "";
+  }
+
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(args).sort(([leftKey], [rightKey]) =>
+        leftKey.localeCompare(rightKey),
+      ),
+    ),
+  );
+}
+
+function compareFilesystemToolCalls(
+  left: ToolCallStreamEvent,
+  right: ToolCallStreamEvent,
+) {
+  const leftWeight = getFilesystemToolCallWeight(left);
+  const rightWeight = getFilesystemToolCallWeight(right);
+
+  if (leftWeight !== rightWeight) {
+    return leftWeight - rightWeight;
+  }
+
+  return getToolArgsPath(left.args).localeCompare(getToolArgsPath(right.args));
+}
+
+function getFilesystemToolCallWeight(event: ToolCallStreamEvent) {
+  if (event.toolName === "list_filesystem_directory") {
+    return getToolArgsPath(event.args) === "." ? 0 : 1;
+  }
+
+  if (event.toolName === "read_filesystem_file") {
+    return 2;
+  }
+
+  if (event.toolName === "search_filesystem_text") {
+    return 3;
+  }
+
+  return 4;
+}
+
+function summarizeDirectoryListing(content: Record<string, unknown>) {
+  const targetPath = formatFilesystemPath(content.path);
+  const entries = Array.isArray(content.entries) ? content.entries : [];
+
+  if (entries.length === 0) {
+    return `当前沙盒路径 ${targetPath} 下没有文件或目录。`;
+  }
+
+  const entryLines = entries
+    .map(formatDirectoryEntry)
+    .filter((line): line is string => Boolean(line));
+
+  if (entryLines.length === 0) {
+    return `当前沙盒路径 ${targetPath} 下没有可展示的文件或目录。`;
+  }
+
+  const truncated = content.truncated === true ? "\n结果已截断。" : "";
+  return [`当前沙盒路径 ${targetPath} 下有：`, ...entryLines]
+    .join("\n")
+    .concat(truncated);
+}
+
+function summarizeReadFile(content: Record<string, unknown>) {
+  const targetPath = formatFilesystemPath(content.path);
+  const fileContent =
+    typeof content.content === "string" ? content.content.trim() : "";
+
+  if (!fileContent) {
+    return `文件 ${targetPath} 是空文本文件。`;
+  }
+
+  const displayedContent =
+    fileContent.length > FALLBACK_FILE_CONTENT_LIMIT
+      ? `${fileContent.slice(0, FALLBACK_FILE_CONTENT_LIMIT)}\n...内容已截断。`
+      : fileContent;
+
+  return `文件 ${targetPath} 的内容：\n${displayedContent}`;
+}
+
+function summarizeTextSearch(content: Record<string, unknown>) {
+  const query = typeof content.query === "string" ? content.query : "";
+  const targetPath = formatFilesystemPath(content.path);
+  const matches = Array.isArray(content.matches) ? content.matches : [];
+
+  if (matches.length === 0) {
+    return `在沙盒路径 ${targetPath} 下没有搜索到 ${JSON.stringify(query)}。`;
+  }
+
+  const displayedMatches = matches.slice(0, FALLBACK_SEARCH_MATCH_LIMIT);
+  const matchLines = displayedMatches
+    .map(formatSearchMatch)
+    .filter((line): line is string => Boolean(line));
+  const truncated =
+    content.truncated === true || matches.length > displayedMatches.length
+      ? "\n结果已截断。"
+      : "";
+
+  return [`搜索 ${JSON.stringify(query)} 的结果：`, ...matchLines]
+    .join("\n")
+    .concat(truncated);
+}
+
+function formatDirectoryEntry(entry: unknown) {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+
+  const data = entry as Record<string, unknown>;
+  const entryPath = typeof data.path === "string" ? data.path : data.name;
+  if (typeof entryPath !== "string" || !entryPath.trim()) {
+    return null;
+  }
+
+  const type = typeof data.type === "string" ? data.type : "unknown";
+  const size =
+    typeof data.sizeBytes === "number" ? `，${data.sizeBytes} bytes` : "";
+
+  return `- ${entryPath}（${type}${size}）`;
+}
+
+function formatSearchMatch(match: unknown) {
+  if (!match || typeof match !== "object") {
+    return null;
+  }
+
+  const data = match as Record<string, unknown>;
+  const matchPath = typeof data.path === "string" ? data.path : "";
+  const lineNumber =
+    typeof data.lineNumber === "number" ? data.lineNumber : undefined;
+  const line = typeof data.line === "string" ? data.line : "";
+
+  if (!matchPath || !line) {
+    return null;
+  }
+
+  return `- ${matchPath}:${lineNumber ?? "?"} ${line}`;
+}
+
+function summarizeFilesystemToolError(
+  event: ToolCallStreamEvent,
+  error: { code: string; message: string },
+) {
+  const targetPath = formatFilesystemPath(getToolArgsPath(event.args));
+
+  if (event.toolName === "read_filesystem_file") {
+    if (error.code === "not_file") {
+      return `路径 ${targetPath} 不是普通文件，不能读取内容；如果它是目录，请使用 list_filesystem_directory 查看目录内容。`;
+    }
+
+    if (error.code === "file_not_found") {
+      return `文件 ${targetPath} 不存在。`;
+    }
+  }
+
+  if (event.toolName === "list_filesystem_directory") {
+    if (error.code === "not_directory") {
+      return `路径 ${targetPath} 不是目录，不能列出目录内容。`;
+    }
+  }
+
+  return `工具 ${event.toolName} 返回错误：${error.code}，${error.message}`;
+}
+
+function getToolArgsPath(args: unknown) {
+  if (!isRecord(args)) {
+    return ".";
+  }
+
+  const inputPath = args.path;
+  return typeof inputPath === "string" && inputPath.trim() ? inputPath : ".";
+}
+
+function parseToolJsonContent(result: unknown) {
+  if (!result || typeof result !== "object" || !("content" in result)) {
+    return null;
+  }
+
+  const content = (result as { content?: unknown }).content;
+  if (typeof content !== "string") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(content) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isToolErrorContent(
+  content: Record<string, unknown>,
+): content is { error: { code: string; message: string }; ok: false } {
+  if (content.ok !== false || !content.error || typeof content.error !== "object") {
+    return false;
+  }
+
+  const error = content.error as Record<string, unknown>;
+  return typeof error.code === "string" && typeof error.message === "string";
+}
+
+function formatFilesystemPath(value: unknown) {
+  const pathValue = typeof value === "string" && value.trim() ? value : ".";
+  return `\`${pathValue}\``;
 }
 
 function isStructuredResponseTool(toolName: string) {
