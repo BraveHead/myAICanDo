@@ -29,6 +29,7 @@ import type {
 
 type StreamConfiguredAgentTextOptions = CreateConfiguredAgentOptions & {
   definition: AgentDefinition;
+  memoryContext?: string;
   messages: AgentMessage[];
   onStreamEvent?: (event: ChatStreamEvent) => void;
   runConfig?: RunnableConfig;
@@ -54,6 +55,11 @@ type FilesystemToolSummary = {
   isError: boolean;
   summary: string;
 };
+type MemoryToolSummary = {
+  event: ToolCallStreamEvent;
+  isError: boolean;
+  summary: string;
+};
 
 let checkpointer: AgentCheckpointer | null = null;
 let checkpointerPromise: Promise<AgentCheckpointer> | null = null;
@@ -75,11 +81,13 @@ export async function createConfiguredAgent(
   {
     apiKey,
     baseURL,
+    memoryContext,
     modelName,
     onStreamEvent,
     threadId,
     threadScope,
   }: CreateConfiguredAgentOptions & {
+    memoryContext?: string;
     onStreamEvent?: (event: ChatStreamEvent) => void;
     threadId?: string;
     threadScope?: ThreadScope;
@@ -103,7 +111,10 @@ export async function createConfiguredAgent(
   return createAgent({
     model,
     tools,
-    systemPrompt: definition.systemPrompt,
+    systemPrompt: appendSystemPromptContext(
+      definition.systemPrompt,
+      memoryContext,
+    ),
     checkpointer: agentCheckpointer,
     ...(definition.responseFormat
       ? { responseFormat: definition.responseFormat }
@@ -114,6 +125,7 @@ export async function createConfiguredAgent(
 
 export async function* streamConfiguredAgentEvents({
   definition,
+  memoryContext,
   messages,
   onStreamEvent,
   runConfig,
@@ -127,6 +139,7 @@ export async function* streamConfiguredAgentEvents({
   const completedToolCalls: ToolCallStreamEvent[] = [];
   const agent = await createConfiguredAgent(definition, {
     ...modelOptions,
+    memoryContext,
     onStreamEvent: (event) => {
       if (event.type === "tool_call" && event.status === "complete") {
         completedToolCallCount += 1;
@@ -263,6 +276,17 @@ function resolveAgentTools(
   return typeof definition.tools === "function"
     ? definition.tools(context)
     : definition.tools;
+}
+
+function appendSystemPromptContext(
+  systemPrompt: string,
+  memoryContext: string | undefined,
+) {
+  if (!memoryContext?.trim()) {
+    return systemPrompt;
+  }
+
+  return `${systemPrompt}\n\n## 已保存的用户记忆\n\n${memoryContext}`;
 }
 
 function createToolCallStreamingMiddleware(
@@ -567,10 +591,24 @@ function createAgentToolResultFallback(
   definition: AgentDefinition,
   completedToolCalls: ToolCallStreamEvent[],
 ): StructuredAgentFallbackResponse | null {
-  if (definition.id !== "filesystem" || completedToolCalls.length === 0) {
+  if (completedToolCalls.length === 0) {
     return null;
   }
 
+  if (definition.id === "filesystem") {
+    return createFilesystemToolResultFallback(completedToolCalls);
+  }
+
+  if (definition.id === "memory") {
+    return createMemoryToolResultFallback(completedToolCalls);
+  }
+
+  return null;
+}
+
+function createFilesystemToolResultFallback(
+  completedToolCalls: ToolCallStreamEvent[],
+) {
   const summaries = getUniqueToolCalls(completedToolCalls)
     .map(createFilesystemToolSummary)
     .filter((summary): summary is FilesystemToolSummary => Boolean(summary));
@@ -585,6 +623,28 @@ function createAgentToolResultFallback(
     confidence: 1,
     keyFacts: visibleSummaries.map((entry) => entry.summary),
     toolResults: visibleSummaries.map((entry) => ({
+      summary: entry.summary,
+      toolName: entry.event.toolName,
+    })),
+  };
+}
+
+function createMemoryToolResultFallback(
+  completedToolCalls: ToolCallStreamEvent[],
+): StructuredAgentFallbackResponse | null {
+  const summaries = getUniqueToolCalls(completedToolCalls)
+    .map(createMemoryToolSummary)
+    .filter((summary): summary is MemoryToolSummary => Boolean(summary));
+
+  if (summaries.length === 0) {
+    return null;
+  }
+
+  return {
+    answer: summaries.map((entry) => entry.summary).join("\n\n"),
+    confidence: 1,
+    keyFacts: summaries.map((entry) => entry.summary),
+    toolResults: summaries.map((entry) => ({
       summary: entry.summary,
       toolName: entry.event.toolName,
     })),
@@ -631,6 +691,44 @@ function createFilesystemToolSummary(
 
   if (event.toolName === "search_filesystem_text") {
     summary = summarizeTextSearch(content);
+  }
+
+  return summary
+    ? {
+        event,
+        isError: false,
+        summary,
+      }
+    : null;
+}
+
+function createMemoryToolSummary(
+  event: ToolCallStreamEvent,
+): MemoryToolSummary | null {
+  const content = parseToolJsonContent(event.result);
+  if (!isRecord(content)) {
+    return null;
+  }
+
+  if (isToolErrorContent(content)) {
+    return {
+      event,
+      isError: true,
+      summary: summarizeMemoryToolError(event, content.error),
+    };
+  }
+
+  let summary: string | null = null;
+  if (event.toolName === "save_memory") {
+    summary = summarizeSavedMemory(content);
+  }
+
+  if (event.toolName === "list_memories") {
+    summary = summarizeMemoryList(content);
+  }
+
+  if (event.toolName === "delete_memory") {
+    summary = summarizeDeletedMemory(content);
   }
 
   return summary
@@ -769,6 +867,49 @@ function summarizeTextSearch(content: Record<string, unknown>) {
     .concat(truncated);
 }
 
+function summarizeSavedMemory(content: Record<string, unknown>) {
+  const memory = isRecord(content.memory) ? content.memory : null;
+  const memoryContent =
+    memory && typeof memory.content === "string" ? memory.content : "";
+  const memoryId =
+    memory && typeof memory.memoryId === "string" ? memory.memoryId : "";
+
+  if (!memoryContent) {
+    return "记忆已保存。";
+  }
+
+  return memoryId
+    ? `已保存记忆 ${memoryId}：${memoryContent}`
+    : `已保存记忆：${memoryContent}`;
+}
+
+function summarizeMemoryList(content: Record<string, unknown>) {
+  const memories = Array.isArray(content.memories) ? content.memories : [];
+
+  if (memories.length === 0) {
+    return "当前没有保存的长期记忆。";
+  }
+
+  const memoryLines = memories
+    .map(formatMemoryEntry)
+    .filter((line): line is string => Boolean(line));
+
+  if (memoryLines.length === 0) {
+    return "当前没有可展示的长期记忆。";
+  }
+
+  return ["已保存的长期记忆：", ...memoryLines].join("\n");
+}
+
+function summarizeDeletedMemory(content: Record<string, unknown>) {
+  const memoryId =
+    typeof content.memoryId === "string" && content.memoryId.trim()
+      ? content.memoryId
+      : "";
+
+  return memoryId ? `已删除记忆 ${memoryId}。` : "已删除记忆。";
+}
+
 function formatDirectoryEntry(entry: unknown) {
   if (!entry || typeof entry !== "object") {
     return null;
@@ -805,6 +946,27 @@ function formatSearchMatch(match: unknown) {
   return `- ${matchPath}:${lineNumber ?? "?"} ${line}`;
 }
 
+function formatMemoryEntry(memory: unknown) {
+  if (!isRecord(memory)) {
+    return null;
+  }
+
+  const memoryId = typeof memory.memoryId === "string" ? memory.memoryId : "";
+  const content = typeof memory.content === "string" ? memory.content : "";
+  const category =
+    typeof memory.category === "string" && memory.category.trim()
+      ? memory.category
+      : "general";
+
+  if (!content) {
+    return null;
+  }
+
+  return memoryId
+    ? `- ${content}（${category}，id: ${memoryId}）`
+    : `- ${content}（${category}）`;
+}
+
 function summarizeFilesystemToolError(
   event: ToolCallStreamEvent,
   error: { code: string; message: string },
@@ -827,6 +989,13 @@ function summarizeFilesystemToolError(
     }
   }
 
+  return `工具 ${event.toolName} 返回错误：${error.code}，${error.message}`;
+}
+
+function summarizeMemoryToolError(
+  event: ToolCallStreamEvent,
+  error: { code: string; message: string },
+) {
   return `工具 ${event.toolName} 返回错误：${error.code}，${error.message}`;
 }
 

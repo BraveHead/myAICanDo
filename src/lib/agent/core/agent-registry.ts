@@ -7,12 +7,14 @@ import type { AgentDefinition, AgentMessage } from "./agent-definition";
 import { demoAgentDefinition } from "../definitions/demo";
 import { filesystemAgentDefinition } from "../definitions/filesystem";
 import { literaryAgentDefinition } from "../definitions/literary";
+import { memoryAgentDefinition } from "../definitions/memory";
 import { weatherAgentDefinition } from "../definitions/weather";
 
 const agentDefinitions: Record<SupportedAgent, AgentDefinition> = {
   weather: weatherAgentDefinition,
   literary: literaryAgentDefinition,
   filesystem: filesystemAgentDefinition,
+  memory: memoryAgentDefinition,
   demo: demoAgentDefinition,
 };
 

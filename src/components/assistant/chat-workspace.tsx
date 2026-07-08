@@ -16,6 +16,7 @@ import {
   Building2,
   BookOpen,
   Bot,
+  Brain,
   CheckCircle2,
   Code2,
   FolderSearch,
@@ -88,6 +89,18 @@ const suggestions: Suggestion[] = [
     icon: FolderSearch,
     prompt: "请列出当前沙盒目录，并说明可以读取哪些文件。",
     agent: "filesystem",
+  },
+  {
+    label: "Remember",
+    icon: Brain,
+    prompt: "请记住：我偏好中文回答，回答问题时默认使用中文。",
+    agent: "memory",
+  },
+  {
+    label: "Memory",
+    icon: BookOpen,
+    prompt: "请查看你已经记住的关于我的信息。如果没有记忆，请直接说明还没有。",
+    agent: "memory",
   },
   {
     label: "Code",

@@ -7,6 +7,11 @@ import { streamConfiguredAgentEvents } from "@/lib/agent/core/agent-runner";
 import { createLangSmithRunConfig } from "@/lib/agent/core/langsmith-tracing";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
 import { encodeChatSseEvent, type ChatStreamEvent } from "@/lib/chat-stream";
+import {
+  formatMemoriesForPrompt,
+  listMemories,
+  type MemoryScope,
+} from "@/lib/server/memory-store";
 import { authErrorResponse, requireTenantAccess } from "@/lib/server/saas";
 import {
   appendThreadMessages,
@@ -40,6 +45,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const threadAgentSelections = new Map<string, SupportedAgent>();
+const MEMORY_CONTEXT_LIMIT = 20;
 
 export async function POST(request: Request, context: ChatRouteContext) {
   const { tenantId } = await context.params;
@@ -125,6 +131,10 @@ export async function POST(request: Request, context: ChatRouteContext) {
           threadAgentSelections.set(selectionKey, agentDefinition.id);
           await saveThreadAgent(threadScope, threadId, agentDefinition.id);
         }
+        const memoryContext =
+          agentDefinition?.id === "memory"
+            ? undefined
+            : await getMemoryContext(threadScope);
 
         const runConfig = createLangSmithRunConfig({
           agent: agentDefinition?.id,
@@ -140,6 +150,7 @@ export async function POST(request: Request, context: ChatRouteContext) {
                 definition: agentDefinition,
                 apiKey,
                 baseURL,
+                memoryContext,
                 modelName,
                 messages: agentMessages,
                 runConfig,
@@ -154,6 +165,7 @@ export async function POST(request: Request, context: ChatRouteContext) {
                   modelName,
                 }),
                 messages: await getModelMessages({
+                  memoryContext,
                   requestMessages: agentMessages,
                   scope: threadScope,
                   threadId,
@@ -282,11 +294,13 @@ async function* streamChatModelEvents({
 }
 
 async function getModelMessages({
+  memoryContext,
   requestMessages,
   scope,
   threadId,
   usesFullHistory,
 }: {
+  memoryContext?: string;
   requestMessages: AgentMessage[];
   scope: { tenantHashId: string; userHashId: string };
   threadId: string;
@@ -299,7 +313,7 @@ async function getModelMessages({
         requestMessages,
       );
 
-  return messages.map((message) => {
+  const modelMessages = messages.map((message) => {
     if (message.role === "system") {
       return new SystemMessage(message.content);
     }
@@ -310,6 +324,23 @@ async function getModelMessages({
 
     return new HumanMessage(message.content);
   });
+
+  if (!memoryContext?.trim()) {
+    return modelMessages;
+  }
+
+  return [
+    new SystemMessage(`已保存的用户记忆：\n\n${memoryContext}`),
+    ...modelMessages,
+  ];
+}
+
+async function getMemoryContext(scope: MemoryScope) {
+  const memories = await listMemories(scope, {
+    limit: MEMORY_CONTEXT_LIMIT,
+  });
+
+  return formatMemoriesForPrompt(memories) ?? undefined;
 }
 
 function normalizeChunkContent(content: unknown) {

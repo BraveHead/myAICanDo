@@ -2,6 +2,7 @@ export const supportedAgentIds = [
   "weather",
   "literary",
   "filesystem",
+  "memory",
   "demo",
 ] as const;
 
