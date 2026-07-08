@@ -12,6 +12,7 @@ import {
   listMemories,
   type MemoryScope,
 } from "@/lib/server/memory-store";
+import { createRequestLogger, toLogError } from "@/lib/server/logger";
 import { authErrorResponse, requireTenantAccess } from "@/lib/server/saas";
 import {
   appendThreadMessages,
@@ -46,14 +47,23 @@ export const dynamic = "force-dynamic";
 
 const threadAgentSelections = new Map<string, SupportedAgent>();
 const MEMORY_CONTEXT_LIMIT = 20;
+const CHAT_ROUTE = "/api/tenants/[tenantId]/chat";
 
 export async function POST(request: Request, context: ChatRouteContext) {
+  const requestStartedAt = Date.now();
+  const requestId = crypto.randomUUID();
   const { tenantId } = await context.params;
+  const routeLogger = createRequestLogger({
+    requestId,
+    route: CHAT_ROUTE,
+    tenantId,
+  });
   let access;
 
   try {
     access = await requireTenantAccess(tenantId);
   } catch (error) {
+    routeLogger.warn({ err: toLogError(error) }, "chat auth failed");
     return authErrorResponse(error);
   }
 
@@ -61,7 +71,8 @@ export async function POST(request: Request, context: ChatRouteContext) {
 
   try {
     body = (await request.json()) as ChatRequestBody;
-  } catch {
+  } catch (error) {
+    routeLogger.warn({ err: toLogError(error) }, "chat request body is invalid");
     return Response.json(
       {
         error: {
@@ -75,6 +86,7 @@ export async function POST(request: Request, context: ChatRouteContext) {
 
   const messages = getRequestMessages(body);
   if (messages.length === 0) {
+    routeLogger.warn("chat request missing messages");
     return Response.json(
       {
         error: {
@@ -88,6 +100,7 @@ export async function POST(request: Request, context: ChatRouteContext) {
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
+    routeLogger.error("chat request missing OPENAI_API_KEY");
     return Response.json(
       {
         error: {
@@ -107,6 +120,14 @@ export async function POST(request: Request, context: ChatRouteContext) {
     userHashId: access.userHashId,
   };
   const selectionKey = createSelectionKey(threadScope, threadId);
+  const requestLogger = createRequestLogger({
+    modelName,
+    requestId,
+    route: CHAT_ROUTE,
+    tenantHashId: access.tenantHashId,
+    threadId,
+    userHashId: access.userHashId,
+  });
 
   const encoder = new TextEncoder();
   const agentMessages: AgentMessage[] = messages.map((message) => ({
@@ -114,10 +135,30 @@ export async function POST(request: Request, context: ChatRouteContext) {
     content: message.content,
   }));
   const messagesToAppend = getMessagesToAppend(agentMessages);
-  await touchThreadFromMessages(threadScope, threadId, agentMessages);
+  try {
+    await touchThreadFromMessages(threadScope, threadId, agentMessages);
+  } catch (error) {
+    requestLogger.error(
+      { err: toLogError(error) },
+      "chat thread touch failed",
+    );
+    throw error;
+  }
+
+  requestLogger.info(
+    {
+      hasBaseURL: Boolean(baseURL),
+      messageCount: agentMessages.length,
+      requestedAgent: body.agent,
+      usesFullHistory: Array.isArray(body.messages),
+    },
+    "chat request accepted",
+  );
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let assistantText = "";
+
       try {
         const persistedAgent = await getThreadAgent(threadScope, threadId);
         const agentDefinition = resolveAgentDefinition({
@@ -135,11 +176,19 @@ export async function POST(request: Request, context: ChatRouteContext) {
           agentDefinition?.id === "memory"
             ? undefined
             : await getMemoryContext(threadScope);
+        requestLogger.info(
+          {
+            agent: agentDefinition?.id ?? "default",
+            hasMemoryContext: Boolean(memoryContext),
+            persistedAgent,
+          },
+          "chat stream started",
+        );
 
         const runConfig = createLangSmithRunConfig({
           agent: agentDefinition?.id,
           modelName,
-          route: "/api/tenants/[tenantId]/chat",
+          route: CHAT_ROUTE,
           tenantHashId: access.tenantHashId,
           threadId,
           userHashId: access.userHashId,
@@ -175,8 +224,6 @@ export async function POST(request: Request, context: ChatRouteContext) {
                 signal: request.signal,
               });
 
-        let assistantText = "";
-
         for await (const event of events) {
           if (event.type === "text_delta") {
             assistantText += event.text;
@@ -197,10 +244,46 @@ export async function POST(request: Request, context: ChatRouteContext) {
             scope: threadScope,
             threadId,
           });
+          requestLogger.info(
+            {
+              agent: agentDefinition?.id ?? "default",
+              assistantTextLength: assistantText.length,
+              durationMs: Date.now() - requestStartedAt,
+              persistedMessageCount: messagesToAppend.length + 1,
+            },
+            "chat response persisted",
+          );
+        } else {
+          requestLogger.info(
+            {
+              agent: agentDefinition?.id ?? "default",
+              durationMs: Date.now() - requestStartedAt,
+            },
+            "chat response had no assistant text to persist",
+          );
         }
 
+        requestLogger.info(
+          {
+            agent: agentDefinition?.id ?? "default",
+            assistantTextLength: assistantText.length,
+            durationMs: Date.now() - requestStartedAt,
+          },
+          "chat stream completed",
+        );
         controller.close();
       } catch (error) {
+        const logPayload = {
+          assistantTextLength: assistantText.length,
+          durationMs: Date.now() - requestStartedAt,
+          err: toLogError(error),
+        };
+        if (isAbortError(error)) {
+          requestLogger.info(logPayload, "chat stream aborted");
+        } else {
+          requestLogger.error(logPayload, "chat stream failed");
+        }
+
         controller.enqueue(
           encoder.encode(
             encodeChatSseEvent({
@@ -212,7 +295,14 @@ export async function POST(request: Request, context: ChatRouteContext) {
         controller.close();
       }
     },
-    cancel() {
+    cancel(reason) {
+      requestLogger.info(
+        {
+          durationMs: Date.now() - requestStartedAt,
+          reason: formatCancelReason(reason),
+        },
+        "chat stream canceled",
+      );
       request.signal.throwIfAborted();
     },
   });
@@ -267,6 +357,21 @@ function isAbortError(error: unknown) {
     error instanceof Error &&
     (error.name === "AbortError" || error.message.includes("aborted"))
   );
+}
+
+function formatCancelReason(reason: unknown) {
+  if (reason instanceof Error) {
+    return {
+      message: reason.message,
+      name: reason.name,
+    };
+  }
+
+  if (typeof reason === "string") {
+    return reason;
+  }
+
+  return reason === undefined ? "unknown" : typeof reason;
 }
 
 async function* streamChatModelEvents({

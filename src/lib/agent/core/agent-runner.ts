@@ -5,6 +5,7 @@ import {
   toolRetryMiddleware,
   type AnyAgentMiddleware,
 } from "langchain";
+import type { Logger } from "pino";
 import { MemorySaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -14,6 +15,7 @@ import {
   createProjectChatModel,
   type CreateProjectChatModelOptions,
 } from "./chat-model";
+import { createRequestLogger, logger, toLogError } from "@/lib/server/logger";
 import { getPostgresPool, hasDatabaseUrl } from "@/lib/server/postgres";
 import {
   loadThreadAgentMessages,
@@ -84,11 +86,13 @@ export async function createConfiguredAgent(
     memoryContext,
     modelName,
     onStreamEvent,
+    runLogger,
     threadId,
     threadScope,
   }: CreateConfiguredAgentOptions & {
     memoryContext?: string;
     onStreamEvent?: (event: ChatStreamEvent) => void;
+    runLogger?: Logger;
     threadId?: string;
     threadScope?: ThreadScope;
   },
@@ -102,11 +106,20 @@ export async function createConfiguredAgent(
   };
   const model = createProjectChatModel(modelOptions);
   const agentCheckpointer = await getAgentCheckpointer();
-  const middleware = createAgentMiddleware(onStreamEvent);
+  const middleware = createAgentMiddleware(onStreamEvent, runLogger);
   const tools = resolveAgentTools(definition, {
     threadId,
     threadScope,
   });
+  runLogger?.debug(
+    {
+      checkpointer: getCheckpointerType(agentCheckpointer),
+      hasMemoryContext: Boolean(memoryContext),
+      hasResponseFormat: Boolean(definition.responseFormat),
+      toolCount: tools.length,
+    },
+    "agent configured",
+  );
 
   return createAgent({
     model,
@@ -137,6 +150,15 @@ export async function* streamConfiguredAgentEvents({
   const queue = createAsyncQueue<ChatStreamEvent>();
   let completedToolCallCount = 0;
   const completedToolCalls: ToolCallStreamEvent[] = [];
+  const runLogger = createRequestLogger({
+    agent: definition.id,
+    component: "agent-runner",
+    hasBaseURL: Boolean(modelOptions.baseURL),
+    modelName: modelOptions.modelName,
+    tenantHashId: threadScope?.tenantHashId,
+    threadId,
+    userHashId: threadScope?.userHashId,
+  });
   const agent = await createConfiguredAgent(definition, {
     ...modelOptions,
     memoryContext,
@@ -149,6 +171,7 @@ export async function* streamConfiguredAgentEvents({
       onStreamEvent?.(event);
       queue.push(event);
     },
+    runLogger,
     threadId,
     threadScope,
   });
@@ -166,6 +189,8 @@ export async function* streamConfiguredAgentEvents({
           threadId,
         })
       : messages;
+  const recursionLimit = definition.recursionLimit ?? 8;
+  const timeoutMs = definition.modelOptions?.timeout ?? DEFAULT_MODEL_TIMEOUT;
   const invokeAgent = (timeoutSignal: AbortSignal) =>
     agent.invoke(
       { messages: invocationMessages },
@@ -176,13 +201,13 @@ export async function* streamConfiguredAgentEvents({
           ...(agentThreadId ? { thread_id: agentThreadId } : {}),
         },
         signal: timeoutSignal,
-        recursionLimit: definition.recursionLimit ?? 8,
+        recursionLimit,
       },
     );
   const runAgent = () =>
     runWithTimeout(invokeAgent, {
       parentSignal: signal,
-      timeoutMs: definition.modelOptions?.timeout ?? DEFAULT_MODEL_TIMEOUT,
+      timeoutMs,
     });
   const pushAgentResult = (result: Awaited<ReturnType<typeof invokeAgent>>) => {
     if (agentThreadId) {
@@ -201,6 +226,12 @@ export async function* streamConfiguredAgentEvents({
     if (structuredResponse !== undefined) {
       queue.push({ type: "structured_response", response: structuredResponse });
     }
+
+    return {
+      hasStructuredResponse: structuredResponse !== undefined,
+      outputMessageCount: result.messages.length,
+      textLength: text.length,
+    };
   };
   const pushToolResultFallback = () => {
     const fallback = createAgentToolResultFallback(definition, completedToolCalls);
@@ -214,13 +245,39 @@ export async function* streamConfiguredAgentEvents({
 
     queue.push({ type: "text_delta", text: fallback.answer });
     queue.push({ type: "structured_response", response: fallback });
+    runLogger.warn(
+      {
+        completedToolCallCount,
+        fallbackTextLength: fallback.answer.length,
+      },
+      "agent tool result fallback emitted",
+    );
     queue.close();
     return true;
   };
 
+  runLogger.info(
+    {
+      agentThreadId,
+      checkpointer: getCheckpointerType(agentCheckpointer),
+      hasMemoryContext: Boolean(memoryContext),
+      invocationMessageCount: invocationMessages.length,
+      recursionLimit,
+      timeoutMs,
+    },
+    "agent invoke started",
+  );
+
   void runAgent()
     .then((result) => {
-      pushAgentResult(result);
+      const resultSummary = pushAgentResult(result);
+      runLogger.info(
+        {
+          ...resultSummary,
+          completedToolCallCount,
+        },
+        "agent invoke completed",
+      );
       queue.close();
     })
     .catch(async (error: unknown) => {
@@ -232,9 +289,23 @@ export async function* streamConfiguredAgentEvents({
         !signal.aborted &&
         shouldRetryAgentError(toError(error))
       ) {
+        runLogger.warn(
+          {
+            completedToolCallCount,
+            err: toLogError(error),
+          },
+          "agent invoke failed after tool call; retrying from checkpoint",
+        );
         try {
           const result = await runAgent();
-          pushAgentResult(result);
+          const resultSummary = pushAgentResult(result);
+          runLogger.info(
+            {
+              ...resultSummary,
+              completedToolCallCount,
+            },
+            "agent invoke resumed from checkpoint",
+          );
           queue.close();
           return;
         } catch (resumeError) {
@@ -243,6 +314,13 @@ export async function* streamConfiguredAgentEvents({
           }
 
           queue.fail(resumeError);
+          runLogger.error(
+            {
+              completedToolCallCount,
+              err: toLogError(resumeError),
+            },
+            "agent invoke resume failed",
+          );
           return;
         }
       }
@@ -252,6 +330,13 @@ export async function* streamConfiguredAgentEvents({
       }
 
       queue.fail(error);
+      runLogger.error(
+        {
+          completedToolCallCount,
+          err: toLogError(error),
+        },
+        "agent invoke failed",
+      );
     });
 
   for await (const event of queue) {
@@ -291,6 +376,7 @@ function appendSystemPromptContext(
 
 function createToolCallStreamingMiddleware(
   onStreamEvent: (event: ChatStreamEvent) => void,
+  runLogger?: Logger,
 ) {
   return createMiddleware({
     name: "ToolCallStreamingMiddleware",
@@ -306,6 +392,14 @@ function createToolCallStreamingMiddleware(
         return handler(request);
       }
 
+      runLogger?.debug(
+        {
+          args: summarizeLogValue(args),
+          toolCallId,
+          toolName,
+        },
+        "agent tool call started",
+      );
       onStreamEvent({
         type: "tool_call",
         args,
@@ -316,6 +410,14 @@ function createToolCallStreamingMiddleware(
 
       try {
         const result = await handler(request);
+        runLogger?.debug(
+          {
+            result: summarizeLogValue(result),
+            toolCallId,
+            toolName,
+          },
+          "agent tool call completed",
+        );
         onStreamEvent({
           type: "tool_call",
           args,
@@ -326,6 +428,14 @@ function createToolCallStreamingMiddleware(
         });
         return result;
       } catch (error) {
+        runLogger?.error(
+          {
+            err: toLogError(error),
+            toolCallId,
+            toolName,
+          },
+          "agent tool call failed",
+        );
         onStreamEvent({
           type: "tool_call",
           args,
@@ -342,6 +452,7 @@ function createToolCallStreamingMiddleware(
 
 function createAgentMiddleware(
   onStreamEvent?: (event: ChatStreamEvent) => void,
+  runLogger?: Logger,
 ): readonly AnyAgentMiddleware[] {
   const retryMiddleware = [
     toolRetryMiddleware(AGENT_RETRY_OPTIONS),
@@ -353,14 +464,15 @@ function createAgentMiddleware(
   }
 
   return [
-    createToolCallStreamingMiddleware(onStreamEvent),
+    createToolCallStreamingMiddleware(onStreamEvent, runLogger),
     ...retryMiddleware,
-    createToolRetryStatusMiddleware(onStreamEvent),
+    createToolRetryStatusMiddleware(onStreamEvent, runLogger),
   ];
 }
 
 function createToolRetryStatusMiddleware(
   onStreamEvent: (event: ChatStreamEvent) => void,
+  runLogger?: Logger,
 ) {
   const failedAttempts = new Map<string, number>();
 
@@ -391,6 +503,18 @@ function createToolRetryStatusMiddleware(
           attempt <= AGENT_RETRY_OPTIONS.maxRetries &&
           shouldRetryAgentError(normalizedError)
         ) {
+          const nextDelayMs = calculateRetryDelay(attempt - 1);
+          runLogger?.warn(
+            {
+              attempt,
+              err: toLogError(normalizedError),
+              maxRetries: AGENT_RETRY_OPTIONS.maxRetries,
+              nextDelayMs,
+              toolCallId,
+              toolName,
+            },
+            "agent tool call retry scheduled",
+          );
           onStreamEvent({
             type: "tool_call",
             args,
@@ -398,13 +522,23 @@ function createToolRetryStatusMiddleware(
               attempt,
               error: formatUnknownError(normalizedError),
               maxRetries: AGENT_RETRY_OPTIONS.maxRetries,
-              nextDelayMs: calculateRetryDelay(attempt - 1),
+              nextDelayMs,
             },
             status: "retrying",
             toolCallId,
             toolName,
           });
         } else {
+          runLogger?.error(
+            {
+              attempt,
+              err: toLogError(normalizedError),
+              maxRetries: AGENT_RETRY_OPTIONS.maxRetries,
+              toolCallId,
+              toolName,
+            },
+            "agent tool call retry exhausted",
+          );
           failedAttempts.delete(toolCallId);
         }
 
@@ -482,13 +616,73 @@ async function getAgentCheckpointer() {
 
 async function createAgentCheckpointer() {
   if (!hasDatabaseUrl()) {
+    logger.warn(
+      {
+        checkpointer: "memory",
+        component: "agent-checkpointer",
+      },
+      "DATABASE_URL is missing; using in-memory LangGraph checkpointer",
+    );
     return new MemorySaver();
   }
 
+  logger.info(
+    {
+      checkpointer: "postgres",
+      component: "agent-checkpointer",
+    },
+    "initializing Postgres LangGraph checkpointer",
+  );
   const postgresSaver = new PostgresSaver(getPostgresPool());
   await postgresSaver.setup();
+  logger.info(
+    {
+      checkpointer: "postgres",
+      component: "agent-checkpointer",
+    },
+    "Postgres LangGraph checkpointer initialized",
+  );
 
   return postgresSaver;
+}
+
+function getCheckpointerType(agentCheckpointer: AgentCheckpointer) {
+  return agentCheckpointer instanceof PostgresSaver ? "postgres" : "memory";
+}
+
+function summarizeLogValue(value: unknown) {
+  if (value === null) {
+    return {
+      type: "null",
+    };
+  }
+
+  if (Array.isArray(value)) {
+    return {
+      length: value.length,
+      type: "array",
+    };
+  }
+
+  if (typeof value === "string") {
+    return {
+      length: value.length,
+      type: "string",
+    };
+  }
+
+  if (typeof value === "object") {
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    return {
+      keyCount: keys.length,
+      keys: keys.slice(0, 20),
+      type: "object",
+    };
+  }
+
+  return {
+    type: typeof value,
+  };
 }
 
 function createAgentThreadId(

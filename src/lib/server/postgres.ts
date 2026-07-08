@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { logger } from "./logger";
 
 let pool: Pool | null = null;
 
@@ -9,6 +10,12 @@ export function hasDatabaseUrl() {
 export function getDatabaseUrl() {
   const databaseUrl = process.env.DATABASE_URL?.trim();
   if (!databaseUrl) {
+    logger.warn(
+      {
+        component: "postgres",
+      },
+      "DATABASE_URL is missing",
+    );
     throw new Error("未配置 DATABASE_URL，无法使用 PostgreSQL 持久化。");
   }
 
@@ -16,9 +23,17 @@ export function getDatabaseUrl() {
 }
 
 export function getPostgresPool() {
-  pool ??= new Pool({
-    connectionString: getDatabaseUrl(),
-  });
+  if (!pool) {
+    logger.info(
+      {
+        component: "postgres",
+      },
+      "initializing PostgreSQL pool",
+    );
+    pool = new Pool({
+      connectionString: getDatabaseUrl(),
+    });
+  }
 
   return pool;
 }
