@@ -1,19 +1,11 @@
 import { tool } from "langchain";
 import * as z from "zod";
 import {
-  deleteMemory,
-  hasMemoryStore,
-  listMemories,
-  saveMemory,
-} from "@/lib/server/memory-store";
-
-type MemoryToolContext = {
-  threadId?: string;
-  threadScope?: {
-    tenantHashId: string;
-    userHashId: string;
-  };
-};
+  deleteUserMemory,
+  queryUserMemories,
+  saveUserMemory,
+  type MemoryServiceContext,
+} from "@/lib/agent/services/memory-service";
 
 const memoryCategorySchema = z
   .string()
@@ -22,42 +14,17 @@ const memoryCategorySchema = z
   .optional()
   .describe("Memory category. Defaults to 'general'.");
 
-export function createMemoryTools(context: MemoryToolContext) {
+export function createMemoryTools(context: MemoryServiceContext) {
   return [
     tool(
-      async ({ category = "general", content, metadata = {} }) => {
-        const scope = getMemoryScope(context);
-        if (!scope) {
-          return jsonResult(createMissingContextError());
-        }
-
-        if (!hasMemoryStore()) {
-          return jsonResult(createMemoryStoreUnavailableError());
-        }
-
-        const normalizedContent = content.trim();
-        if (!normalizedContent) {
-          return jsonResult(
-            createMemoryError("invalid_content", "Memory content cannot be empty."),
-          );
-        }
-
-        const memory = await saveMemory(scope, {
-          category: normalizeCategory(category),
-          content: normalizedContent,
-          metadata,
-          sourceThreadId: context.threadId,
-        });
-
-        if (!memory) {
-          return jsonResult(createMemoryStoreUnavailableError());
-        }
-
-        return jsonResult({
-          ok: true,
-          memory,
-        });
-      },
+      async ({ category = "general", content, metadata = {} }) =>
+        jsonResult(
+          await saveUserMemory(context, {
+            category,
+            content,
+            metadata,
+          }),
+        ),
       {
         name: "save_memory",
         description:
@@ -77,28 +44,13 @@ export function createMemoryTools(context: MemoryToolContext) {
       },
     ),
     tool(
-      async ({ limit = 20, query }) => {
-        const scope = getMemoryScope(context);
-        if (!scope) {
-          return jsonResult(createMissingContextError());
-        }
-
-        if (!hasMemoryStore()) {
-          return jsonResult(createMemoryStoreUnavailableError());
-        }
-
-        const memories = await listMemories(scope, {
-          limit,
-          query,
-        });
-
-        return jsonResult({
-          ok: true,
-          memories,
-          count: memories.length,
-          query: query?.trim() || null,
-        });
-      },
+      async ({ limit = 20, query }) =>
+        jsonResult(
+          await queryUserMemories(context, {
+            limit,
+            query,
+          }),
+        ),
       {
         name: "list_memories",
         description:
@@ -120,32 +72,8 @@ export function createMemoryTools(context: MemoryToolContext) {
       },
     ),
     tool(
-      async ({ memoryId }) => {
-        const scope = getMemoryScope(context);
-        if (!scope) {
-          return jsonResult(createMissingContextError());
-        }
-
-        if (!hasMemoryStore()) {
-          return jsonResult(createMemoryStoreUnavailableError());
-        }
-
-        const deleted = await deleteMemory(scope, memoryId);
-        if (!deleted) {
-          return jsonResult(
-            createMemoryError(
-              "memory_not_found",
-              "No memory with this id exists for the current tenant and user.",
-            ),
-          );
-        }
-
-        return jsonResult({
-          ok: true,
-          deleted: true,
-          memoryId,
-        });
-      },
+      async ({ memoryId }) =>
+        jsonResult(await deleteUserMemory(context, memoryId)),
       {
         name: "delete_memory",
         description:
@@ -156,45 +84,6 @@ export function createMemoryTools(context: MemoryToolContext) {
       },
     ),
   ];
-}
-
-function getMemoryScope(context: MemoryToolContext) {
-  if (!context.threadScope) {
-    return null;
-  }
-
-  return {
-    tenantHashId: context.threadScope.tenantHashId,
-    userHashId: context.threadScope.userHashId,
-  };
-}
-
-function normalizeCategory(category: string | undefined) {
-  return category?.trim() || "general";
-}
-
-function createMissingContextError() {
-  return createMemoryError(
-    "missing_context",
-    "Memory tools require tenant and user context.",
-  );
-}
-
-function createMemoryStoreUnavailableError() {
-  return createMemoryError(
-    "memory_store_unavailable",
-    "Memory store requires DATABASE_URL.",
-  );
-}
-
-function createMemoryError(code: string, message: string) {
-  return {
-    ok: false,
-    error: {
-      code,
-      message,
-    },
-  };
 }
 
 function jsonResult(value: unknown) {

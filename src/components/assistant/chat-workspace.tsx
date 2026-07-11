@@ -8,6 +8,7 @@ import {
   useAui,
   useAuiState,
   type DataMessagePartProps,
+  type EmptyMessagePartProps,
   type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
 import {
@@ -71,6 +72,13 @@ const suggestions: Suggestion[] = [
     icon: Bot,
     prompt: "现在几点了？请顺带自我介绍一句。",
     agent: "demo",
+  },
+  {
+    label: "Coordinator",
+    icon: Sparkles,
+    prompt:
+      "请先查看我的记忆偏好，再列出当前沙盒 docs 目录，并按偏好总结有哪些文件。",
+    agent: "coordinator",
   },
   {
     label: "Weather",
@@ -809,7 +817,11 @@ function MarkdownText() {
   );
 }
 
-function AssistantLoading() {
+function AssistantLoading({ status }: EmptyMessagePartProps) {
+  if (status.type !== "running") {
+    return null;
+  }
+
   return (
     <div className="flex items-center gap-2 py-1 text-sm text-[#777777]">
       <span className="size-2 animate-pulse rounded-full bg-[#999999]" />

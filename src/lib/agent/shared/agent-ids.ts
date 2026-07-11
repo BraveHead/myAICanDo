@@ -1,4 +1,5 @@
 export const supportedAgentIds = [
+  "coordinator",
   "weather",
   "literary",
   "filesystem",

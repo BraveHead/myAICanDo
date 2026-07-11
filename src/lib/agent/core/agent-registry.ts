@@ -4,6 +4,7 @@ import {
   type SupportedAgent,
 } from "../shared/agent-ids";
 import type { AgentDefinition, AgentMessage } from "./agent-definition";
+import { coordinatorAgentDefinition } from "../definitions/coordinator";
 import { demoAgentDefinition } from "../definitions/demo";
 import { filesystemAgentDefinition } from "../definitions/filesystem";
 import { literaryAgentDefinition } from "../definitions/literary";
@@ -11,6 +12,7 @@ import { memoryAgentDefinition } from "../definitions/memory";
 import { weatherAgentDefinition } from "../definitions/weather";
 
 const agentDefinitions: Record<SupportedAgent, AgentDefinition> = {
+  coordinator: coordinatorAgentDefinition,
   weather: weatherAgentDefinition,
   literary: literaryAgentDefinition,
   filesystem: filesystemAgentDefinition,

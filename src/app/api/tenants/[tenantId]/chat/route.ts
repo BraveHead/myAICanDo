@@ -173,7 +173,7 @@ export async function POST(request: Request, context: ChatRouteContext) {
           await saveThreadAgent(threadScope, threadId, agentDefinition.id);
         }
         const memoryContext =
-          agentDefinition?.id === "memory"
+          agentDefinition?.id === "memory" || agentDefinition?.id === "coordinator"
             ? undefined
             : await getMemoryContext(threadScope);
         requestLogger.info(

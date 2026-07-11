@@ -62,6 +62,11 @@ type MemoryToolSummary = {
   isError: boolean;
   summary: string;
 };
+type CoordinatorToolSummary = {
+  event: ToolCallStreamEvent;
+  isError: boolean;
+  summary: string;
+};
 
 let checkpointer: AgentCheckpointer | null = null;
 let checkpointerPromise: Promise<AgentCheckpointer> | null = null;
@@ -797,6 +802,10 @@ function createAgentToolResultFallback(
     return createMemoryToolResultFallback(completedToolCalls);
   }
 
+  if (definition.id === "coordinator") {
+    return createCoordinatorToolResultFallback(completedToolCalls);
+  }
+
   return null;
 }
 
@@ -829,6 +838,28 @@ function createMemoryToolResultFallback(
   const summaries = getUniqueToolCalls(completedToolCalls)
     .map(createMemoryToolSummary)
     .filter((summary): summary is MemoryToolSummary => Boolean(summary));
+
+  if (summaries.length === 0) {
+    return null;
+  }
+
+  return {
+    answer: summaries.map((entry) => entry.summary).join("\n\n"),
+    confidence: 1,
+    keyFacts: summaries.map((entry) => entry.summary),
+    toolResults: summaries.map((entry) => ({
+      summary: entry.summary,
+      toolName: entry.event.toolName,
+    })),
+  };
+}
+
+function createCoordinatorToolResultFallback(
+  completedToolCalls: ToolCallStreamEvent[],
+): StructuredAgentFallbackResponse | null {
+  const summaries = getUniqueToolCalls(completedToolCalls)
+    .map(createCoordinatorToolSummary)
+    .filter((summary): summary is CoordinatorToolSummary => Boolean(summary));
 
   if (summaries.length === 0) {
     return null;
@@ -932,6 +963,22 @@ function createMemoryToolSummary(
         summary,
       }
     : null;
+}
+
+function createCoordinatorToolSummary(
+  event: ToolCallStreamEvent,
+): CoordinatorToolSummary | null {
+  const content = parseToolJsonContent(event.result);
+  if (!isRecord(content) || typeof content.summary !== "string") {
+    return null;
+  }
+
+  const isError = content.ok === false;
+  return {
+    event,
+    isError,
+    summary: content.summary,
+  };
 }
 
 function getVisibleFilesystemSummaries(summaries: FilesystemToolSummary[]) {
