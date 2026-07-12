@@ -40,15 +40,15 @@ export function ChatRuntimeProvider({
         runConfig,
       }) {
         const threadId = loadActiveThreadId(tenantHashId) ?? unstable_threadId;
-        const approvalDecision = getApprovalDecision(unstable_getMessage());
-        if (approvalDecision) {
+        const approvalDecisions = getApprovalDecisions(unstable_getMessage());
+        if (approvalDecisions.length > 0) {
           if (!threadId) {
             throw new Error("缺少 threadId，无法执行人工确认。");
           }
 
-          yield* runApprovalExecution({
+          yield* runApprovalExecutions({
             abortSignal,
-            approvalDecision,
+            approvalDecisions,
             tenantHashId,
             threadId,
           });
@@ -150,11 +150,12 @@ type ApprovalDecision = {
   reason?: string;
 };
 
-function getApprovalDecision(message: ThreadMessage): ApprovalDecision | null {
+function getApprovalDecisions(message: ThreadMessage): ApprovalDecision[] {
   if (message.role !== "assistant") {
-    return null;
+    return [];
   }
 
+  const decisions: ApprovalDecision[] = [];
   for (const part of message.content) {
     if (
       part.type !== "tool-call" ||
@@ -166,17 +167,56 @@ function getApprovalDecision(message: ThreadMessage): ApprovalDecision | null {
       continue;
     }
 
-    return {
+    decisions.push({
       approvalId: part.approval.id,
       approved: part.approval.approved,
       reason: part.approval.reason,
-    };
+    });
   }
 
-  return null;
+  return decisions;
 }
 
-async function* runApprovalExecution({
+async function* runApprovalExecutions({
+  abortSignal,
+  approvalDecisions,
+  tenantHashId,
+  threadId,
+}: {
+  abortSignal: AbortSignal;
+  approvalDecisions: ApprovalDecision[];
+  tenantHashId: string;
+  threadId: string;
+}) {
+  const responses: ApprovalExecutionResponse[] = [];
+  for (const approvalDecision of approvalDecisions) {
+    responses.push(
+      await executeApprovalDecision({
+        abortSignal,
+        approvalDecision,
+        tenantHashId,
+        threadId,
+      }),
+    );
+  }
+
+  yield {
+    content: [
+      { type: "text", text: mergeApprovalFinalText(responses) },
+      {
+        type: "data",
+        name: "structured_response",
+        data: mergeApprovalStructuredResponse(responses),
+      },
+    ] satisfies ThreadAssistantMessagePart[],
+    status: {
+      type: "complete" as const,
+      reason: "unknown" as const,
+    },
+  };
+}
+
+async function executeApprovalDecision({
   abortSignal,
   approvalDecision,
   tenantHashId,
@@ -208,21 +248,34 @@ async function* runApprovalExecution({
     throw new Error(await readErrorMessage(response));
   }
 
-  const data = (await response.json()) as ApprovalExecutionResponse;
-  yield {
-    content: [
-      { type: "text", text: data.finalText },
-      {
-        type: "data",
-        name: "structured_response",
-        data: data.structuredResponse,
-      },
-    ] satisfies ThreadAssistantMessagePart[],
-    status: {
-      type: "complete" as const,
-      reason: "unknown" as const,
-    },
-  };
+  return (await response.json()) as ApprovalExecutionResponse;
+}
+
+function mergeApprovalFinalText(responses: ApprovalExecutionResponse[]) {
+  return responses
+    .map((response) => response.finalText.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function mergeApprovalStructuredResponse(responses: ApprovalExecutionResponse[]) {
+  if (responses.length === 1) {
+    return responses[0].structuredResponse;
+  }
+
+  const finalText = mergeApprovalFinalText(responses);
+  return {
+    answer: finalText,
+    confidence: Math.min(
+      ...responses.map((response) => response.structuredResponse.confidence),
+    ),
+    keyFacts: responses.flatMap(
+      (response) => response.structuredResponse.keyFacts,
+    ),
+    toolResults: responses.flatMap(
+      (response) => response.structuredResponse.toolResults,
+    ),
+  } satisfies ApprovalExecutionResponse["structuredResponse"];
 }
 
 function getSupportedAgent(agent: unknown): SupportedAgent | undefined {

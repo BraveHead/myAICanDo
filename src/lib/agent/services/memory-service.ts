@@ -1,6 +1,7 @@
 import {
   deleteMemory,
   hasMemoryStore,
+  inferMemoryKey,
   listMemories,
   saveMemory,
   type MemoryScope,
@@ -79,6 +80,7 @@ export async function saveUserMemory(
   const memory = await saveMemory(scope, {
     category: normalizeCategory(category),
     content: normalizedContent,
+    memoryKey: inferMemoryKey(category ?? "general", normalizedContent),
     metadata,
     sourceThreadId: context.threadId,
   });
@@ -186,8 +188,8 @@ function summarizeMemories(memories: StoredMemory[], query: string | undefined) 
     : `找到 ${memories.length} 条长期记忆：`;
   const memoryLines = memories.map((memory) =>
     memory.memoryId
-      ? `- ${memory.content}（${memory.category}，id: ${memory.memoryId}）`
-      : `- ${memory.content}（${memory.category}）`,
+      ? `- ${memory.content}（${memory.category}，${memory.memoryKey}，id: ${memory.memoryId}）`
+      : `- ${memory.content}（${memory.category}，${memory.memoryKey}）`,
   );
 
   return [prefix, ...memoryLines].join("\n");
