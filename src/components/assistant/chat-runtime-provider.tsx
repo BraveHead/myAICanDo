@@ -13,6 +13,11 @@ import {
   isSupportedAgent,
   type SupportedAgent,
 } from "@/lib/agent/shared/agent-ids";
+import {
+  APPROVAL_GATED_TOOL_NAMES,
+  isApprovalGatedToolName,
+  type ApprovalExecutionResponse,
+} from "@/lib/approval-actions";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import { loadActiveThreadId } from "@/lib/thread-storage";
 
@@ -27,7 +32,29 @@ export function ChatRuntimeProvider({
 }: PropsWithChildren<{ tenantHashId: string }>) {
   const adapter = useMemo<ChatModelAdapter>(
     () => ({
-      async *run({ messages, abortSignal, unstable_threadId, runConfig }) {
+      async *run({
+        messages,
+        abortSignal,
+        unstable_getMessage,
+        unstable_threadId,
+        runConfig,
+      }) {
+        const threadId = loadActiveThreadId(tenantHashId) ?? unstable_threadId;
+        const approvalDecision = getApprovalDecision(unstable_getMessage());
+        if (approvalDecision) {
+          if (!threadId) {
+            throw new Error("缺少 threadId，无法执行人工确认。");
+          }
+
+          yield* runApprovalExecution({
+            abortSignal,
+            approvalDecision,
+            tenantHashId,
+            threadId,
+          });
+          return;
+        }
+
         const apiMessages = messages.map(toApiMessage).filter(isApiMessage);
         const latestMessage = getLatestMessage(apiMessages);
 
@@ -38,20 +65,20 @@ export function ChatRuntimeProvider({
         const response = await fetch(
           `/api/tenants/${encodeURIComponent(tenantHashId)}/chat`,
           {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            message: latestMessage,
-            model:
-              typeof runConfig.custom?.model === "string"
-                ? runConfig.custom.model
-                : undefined,
-            agent: getSupportedAgent(runConfig.custom?.agent),
-            threadId: loadActiveThreadId(tenantHashId) ?? unstable_threadId,
-          }),
-          signal: abortSignal,
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              message: latestMessage,
+              model:
+                typeof runConfig.custom?.model === "string"
+                  ? runConfig.custom.model
+                  : undefined,
+              agent: getSupportedAgent(runConfig.custom?.agent),
+              threadId,
+            }),
+            signal: abortSignal,
           },
         );
 
@@ -83,9 +110,11 @@ export function ChatRuntimeProvider({
           buffer = updates.remaining;
 
           for (const event of updates.events) {
-            const nextContent = content.apply(event);
-            if (nextContent.length > 0) {
-              yield { content: nextContent };
+            const update = content.apply(event);
+            if (update.content.length > 0) {
+              yield update.status
+                ? { content: update.content, status: update.status }
+                : { content: update.content };
             }
           }
         }
@@ -93,22 +122,107 @@ export function ChatRuntimeProvider({
         buffer += decoder.decode();
         const updates = consumeChatSseBuffer(buffer, { flush: true });
         for (const event of updates.events) {
-          const nextContent = content.apply(event);
-          if (nextContent.length > 0) {
-            yield { content: nextContent };
+          const update = content.apply(event);
+          if (update.content.length > 0) {
+            yield update.status
+              ? { content: update.content, status: update.status }
+              : { content: update.content };
           }
         }
       },
     }),
     [tenantHashId],
   );
-  const runtime = useLocalRuntime(adapter);
+  const runtime = useLocalRuntime(adapter, {
+    unstable_humanToolNames: [...APPROVAL_GATED_TOOL_NAMES],
+  });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       {children}
     </AssistantRuntimeProvider>
   );
+}
+
+type ApprovalDecision = {
+  approvalId: string;
+  approved: boolean;
+  reason?: string;
+};
+
+function getApprovalDecision(message: ThreadMessage): ApprovalDecision | null {
+  if (message.role !== "assistant") {
+    return null;
+  }
+
+  for (const part of message.content) {
+    if (
+      part.type !== "tool-call" ||
+      !part.approval ||
+      part.approval.approved === undefined ||
+      part.approval.resolution !== undefined ||
+      !isApprovalGatedToolName(part.toolName)
+    ) {
+      continue;
+    }
+
+    return {
+      approvalId: part.approval.id,
+      approved: part.approval.approved,
+      reason: part.approval.reason,
+    };
+  }
+
+  return null;
+}
+
+async function* runApprovalExecution({
+  abortSignal,
+  approvalDecision,
+  tenantHashId,
+  threadId,
+}: {
+  abortSignal: AbortSignal;
+  approvalDecision: ApprovalDecision;
+  tenantHashId: string;
+  threadId: string;
+}) {
+  const response = await fetch(
+    `/api/tenants/${encodeURIComponent(tenantHashId)}/chat/approvals`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        approvalId: approvalDecision.approvalId,
+        approved: approvalDecision.approved,
+        reason: approvalDecision.reason,
+        threadId,
+      }),
+      signal: abortSignal,
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  const data = (await response.json()) as ApprovalExecutionResponse;
+  yield {
+    content: [
+      { type: "text", text: data.finalText },
+      {
+        type: "data",
+        name: "structured_response",
+        data: data.structuredResponse,
+      },
+    ] satisfies ThreadAssistantMessagePart[],
+    status: {
+      type: "complete" as const,
+      reason: "unknown" as const,
+    },
+  };
 }
 
 function getSupportedAgent(agent: unknown): SupportedAgent | undefined {
@@ -283,6 +397,7 @@ function parseChatSseEvent(frame: string): ChatStreamEvent | null {
 function createAssistantContentBuilder() {
   let structuredResponsePart: ThreadAssistantMessagePart | null = null;
   const toolParts = new Map<string, ToolCallMessagePart>();
+  let requiresAction = false;
   let text = "";
 
   return {
@@ -290,6 +405,9 @@ function createAssistantContentBuilder() {
       if (event.type === "text_delta") {
         text += event.text;
       } else if (event.type === "tool_call") {
+        if (event.status === "requires_action") {
+          requiresAction = true;
+        }
         toolParts.set(event.toolCallId, toToolCallPart(event));
       } else {
         structuredResponsePart = {
@@ -299,13 +417,23 @@ function createAssistantContentBuilder() {
         };
       }
 
-      return [
+      const content = [
         ...toolParts.values(),
         ...(text
           ? ([{ type: "text", text }] satisfies ThreadAssistantMessagePart[])
           : []),
         ...(structuredResponsePart ? [structuredResponsePart] : []),
       ];
+
+      return {
+        content,
+        status: requiresAction
+          ? ({
+              type: "requires-action",
+              reason: "tool-calls",
+            } as const)
+          : undefined,
+      };
     },
   };
 }
@@ -326,6 +454,7 @@ function toToolCallPart(event: Extract<ChatStreamEvent, { type: "tool_call" }>) 
     toolName: event.toolName,
     args: displayArgs as ToolCallMessagePart["args"],
     argsText: stringifyToolPayload(event.args),
+    ...(event.approval ? { approval: event.approval } : {}),
     ...(event.status === "complete" ? { result: event.result } : {}),
     ...(event.status === "error"
       ? { isError: true, result: event.error ?? "工具调用失败" }

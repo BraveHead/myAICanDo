@@ -9,6 +9,11 @@ import type { Logger } from "pino";
 import { MemorySaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import type { RunnableConfig } from "@langchain/core/runnables";
+import {
+  isApprovalGatedToolName,
+  type ApprovalGatedToolName,
+  type ApprovalPendingPayload,
+} from "@/lib/approval-actions";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import {
   DEFAULT_MODEL_TIMEOUT,
@@ -16,6 +21,7 @@ import {
   type CreateProjectChatModelOptions,
 } from "./chat-model";
 import { createRequestLogger, logger, toLogError } from "@/lib/server/logger";
+import { createPendingAction } from "@/lib/server/pending-action-store";
 import { getPostgresPool, hasDatabaseUrl } from "@/lib/server/postgres";
 import {
   loadThreadAgentMessages,
@@ -83,6 +89,16 @@ const AGENT_RETRY_OPTIONS = {
 const FALLBACK_FILE_CONTENT_LIMIT = 4_000;
 const FALLBACK_SEARCH_MATCH_LIMIT = 20;
 
+class ToolApprovalRequiredError extends Error {
+  constructor(
+    public readonly pendingAction: ApprovalPendingPayload,
+    public readonly userMessage: string,
+  ) {
+    super(userMessage);
+    this.name = "ToolApprovalRequiredError";
+  }
+}
+
 export async function createConfiguredAgent(
   definition: AgentDefinition,
   {
@@ -111,7 +127,11 @@ export async function createConfiguredAgent(
   };
   const model = createProjectChatModel(modelOptions);
   const agentCheckpointer = await getAgentCheckpointer();
-  const middleware = createAgentMiddleware(onStreamEvent, runLogger);
+  const middleware = createAgentMiddleware(onStreamEvent, runLogger, {
+    agentId: definition.id,
+    threadId,
+    threadScope,
+  });
   const tools = resolveAgentTools(definition, {
     threadId,
     threadScope,
@@ -286,6 +306,28 @@ export async function* streamConfiguredAgentEvents({
       queue.close();
     })
     .catch(async (error: unknown) => {
+      if (isToolApprovalRequiredError(error)) {
+        if (agentThreadId) {
+          initializedAgentThreads.add(agentThreadId);
+        }
+        const structuredResponse = createApprovalPendingStructuredResponse(error);
+        queue.push({ type: "text_delta", text: error.userMessage });
+        queue.push({
+          type: "structured_response",
+          response: structuredResponse,
+        });
+        runLogger.info(
+          {
+            approvalId: error.pendingAction.actionId,
+            toolCallId: error.pendingAction.toolCallId,
+            toolName: error.pendingAction.toolName,
+          },
+          "agent invoke paused for tool approval",
+        );
+        queue.close();
+        return;
+      }
+
       // Tool results may already be checkpointed when the final model call fails;
       // one resume lets LangGraph finish from that persisted state.
       if (
@@ -382,6 +424,11 @@ function appendSystemPromptContext(
 function createToolCallStreamingMiddleware(
   onStreamEvent: (event: ChatStreamEvent) => void,
   runLogger?: Logger,
+  approvalContext?: {
+    agentId: AgentDefinition["id"];
+    threadId?: string;
+    threadScope?: ThreadScope;
+  },
 ) {
   return createMiddleware({
     name: "ToolCallStreamingMiddleware",
@@ -395,6 +442,35 @@ function createToolCallStreamingMiddleware(
 
       if (isStructuredResponseTool(toolName)) {
         return handler(request);
+      }
+
+      if (isApprovalGatedToolName(toolName)) {
+        const pendingAction = await createToolApprovalAction({
+          args,
+          approvalContext,
+          toolCallId,
+          toolName,
+        });
+        runLogger?.info(
+          {
+            approvalId: pendingAction.actionId,
+            toolCallId,
+            toolName,
+          },
+          "agent tool call requires approval",
+        );
+        onStreamEvent({
+          type: "tool_call",
+          approval: createToolApprovalPayload(pendingAction),
+          args,
+          status: "requires_action",
+          toolCallId,
+          toolName,
+        });
+        throw new ToolApprovalRequiredError(
+          pendingAction,
+          createApprovalRequiredMessage(toolName, args),
+        );
       }
 
       runLogger?.debug(
@@ -458,6 +534,11 @@ function createToolCallStreamingMiddleware(
 function createAgentMiddleware(
   onStreamEvent?: (event: ChatStreamEvent) => void,
   runLogger?: Logger,
+  approvalContext?: {
+    agentId: AgentDefinition["id"];
+    threadId?: string;
+    threadScope?: ThreadScope;
+  },
 ): readonly AnyAgentMiddleware[] {
   const retryMiddleware = [
     toolRetryMiddleware(AGENT_RETRY_OPTIONS),
@@ -469,10 +550,108 @@ function createAgentMiddleware(
   }
 
   return [
-    createToolCallStreamingMiddleware(onStreamEvent, runLogger),
+    createToolCallStreamingMiddleware(onStreamEvent, runLogger, approvalContext),
     ...retryMiddleware,
     createToolRetryStatusMiddleware(onStreamEvent, runLogger),
   ];
+}
+
+async function createToolApprovalAction({
+  approvalContext,
+  args,
+  toolCallId,
+  toolName,
+}: {
+  approvalContext?: {
+    agentId: AgentDefinition["id"];
+    threadId?: string;
+    threadScope?: ThreadScope;
+  };
+  args: unknown;
+  toolCallId: string;
+  toolName: ApprovalGatedToolName;
+}) {
+  if (!approvalContext?.threadId || !approvalContext.threadScope) {
+    throw new Error("人工确认工具需要 tenant/user/thread 上下文。");
+  }
+
+  const pendingAction = await createPendingAction(approvalContext.threadScope, {
+    agentId: approvalContext.agentId,
+    args,
+    threadId: approvalContext.threadId,
+    toolCallId,
+    toolName,
+  });
+
+  if (!pendingAction) {
+    throw new Error("未配置 DATABASE_URL，无法创建人工确认请求。");
+  }
+
+  return {
+    actionId: pendingAction.actionId,
+    agentId: approvalContext.agentId,
+    args,
+    toolCallId,
+    toolName,
+  } satisfies ApprovalPendingPayload;
+}
+
+function createToolApprovalPayload(action: ApprovalPendingPayload) {
+  const actionLabel =
+    action.toolName === "save_memory" ? "保存记忆" : "删除记忆";
+
+  return {
+    id: action.actionId,
+    options: [
+      {
+        id: "approve-once",
+        kind: "allow-once",
+        label: `确认${actionLabel}`,
+        description: "只允许本次工具调用执行。",
+      },
+      {
+        id: "reject-once",
+        kind: "reject-once",
+        label: "取消",
+        description: "取消本次工具调用，不修改长期记忆。",
+      },
+    ],
+  };
+}
+
+function createApprovalRequiredMessage(
+  toolName: ApprovalGatedToolName,
+  args: unknown,
+) {
+  if (toolName === "save_memory") {
+    const content =
+      isRecord(args) && typeof args.content === "string"
+        ? `：${args.content}`
+        : "";
+    return `需要你确认后才会保存这条长期记忆${content}`;
+  }
+
+  const memoryId =
+    isRecord(args) && typeof args.memoryId === "string"
+      ? ` ${args.memoryId}`
+      : "";
+  return `需要你确认后才会删除长期记忆${memoryId}。`;
+}
+
+function createApprovalPendingStructuredResponse(
+  error: ToolApprovalRequiredError,
+): StructuredAgentFallbackResponse {
+  return {
+    answer: error.userMessage,
+    confidence: 1,
+    keyFacts: [error.userMessage],
+    toolResults: [
+      {
+        summary: error.userMessage,
+        toolName: error.pendingAction.toolName,
+      },
+    ],
+  };
 }
 
 function createToolRetryStatusMiddleware(
@@ -1310,6 +1489,12 @@ function normalizeToolResult(result: unknown) {
 
 function formatUnknownError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isToolApprovalRequiredError(
+  error: unknown,
+): error is ToolApprovalRequiredError {
+  return error instanceof ToolApprovalRequiredError;
 }
 
 function toError(error: unknown) {

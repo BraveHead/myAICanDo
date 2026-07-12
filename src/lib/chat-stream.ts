@@ -7,13 +7,29 @@ export type ChatStreamEvent =
       args: unknown;
       error?: string;
       result?: unknown;
+      approval?: {
+        id: string;
+        approved?: boolean;
+        reason?: string;
+        isAutomatic?: boolean;
+        options?: Array<{
+          id: string;
+          kind: string;
+          label?: string;
+          description?: string;
+          grants?: string[];
+          confirm?: boolean | { title?: string; description?: string };
+        }>;
+        optionId?: string;
+        resolution?: "cancelled" | "expired";
+      };
       retry?: {
         attempt: number;
         error: string;
         maxRetries: number;
         nextDelayMs: number;
       };
-      status: "running" | "retrying" | "complete" | "error";
+      status: "running" | "retrying" | "requires_action" | "complete" | "error";
       toolCallId: string;
       toolName: string;
       type: "tool_call";

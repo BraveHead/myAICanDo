@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Human-in-the-loop v1 流程图</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fa;
+        --panel: #ffffff;
+        --ink: #16181d;
+        --muted: #667085;
+        --line: #d9dee7;
+        --accent: #2563eb;
+        --accent-soft: #e9f0ff;
+        --warn: #a15c07;
+        --warn-soft: #fff4df;
+        --ok: #047857;
+        --ok-soft: #e8f7f0;
+        --danger: #b42318;
+        --danger-soft: #fff1f0;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        line-height: 1.55;
+      }
+
+      main {
+        width: min(1180px, calc(100vw - 48px));
+        margin: 0 auto;
+        padding: 36px 0 48px;
+      }
+
+      header {
+        margin-bottom: 24px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+        letter-spacing: 0;
+      }
+
+      .subtitle {
+        margin: 0;
+        max-width: 840px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .panel {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel);
+        box-shadow: 0 10px 28px rgb(20 28 45 / 6%);
+      }
+
+      .panel + .panel {
+        margin-top: 20px;
+      }
+
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        border-bottom: 1px solid var(--line);
+        padding: 16px 18px;
+      }
+
+      .panel-title {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      .badge {
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 18px;
+        padding: 18px;
+      }
+
+      .lane {
+        min-width: 0;
+      }
+
+      .lane-title {
+        margin: 0 0 12px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .step {
+        position: relative;
+        min-height: 110px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        padding: 13px;
+      }
+
+      .step + .step {
+        margin-top: 18px;
+      }
+
+      .step + .step::before {
+        position: absolute;
+        top: -19px;
+        left: 26px;
+        width: 2px;
+        height: 18px;
+        background: var(--line);
+        content: "";
+      }
+
+      .step h3 {
+        margin: 0 0 7px;
+        font-size: 15px;
+      }
+
+      .step p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .step code {
+        border-radius: 5px;
+        background: #f2f4f7;
+        padding: 1px 5px;
+        color: #344054;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .step.approval {
+        border-color: #f0c36d;
+        background: var(--warn-soft);
+      }
+
+      .step.success {
+        border-color: #a6d8bf;
+        background: var(--ok-soft);
+      }
+
+      .step.error {
+        border-color: #f1aaa5;
+        background: var(--danger-soft);
+      }
+
+      .arrow-row {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 18px;
+        padding: 0 18px 18px;
+      }
+
+      .arrow {
+        position: relative;
+        min-height: 22px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .arrow::before {
+        position: absolute;
+        top: 10px;
+        left: 0;
+        right: -18px;
+        height: 2px;
+        background: var(--line);
+        content: "";
+      }
+
+      .arrow::after {
+        position: absolute;
+        top: 5px;
+        right: -18px;
+        width: 10px;
+        height: 10px;
+        border-top: 2px solid var(--line);
+        border-right: 2px solid var(--line);
+        transform: rotate(45deg);
+        content: "";
+      }
+
+      .arrow:last-child::before,
+      .arrow:last-child::after {
+        display: none;
+      }
+
+      .details {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        padding: 18px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        padding: 15px;
+      }
+
+      .card h3 {
+        margin: 0 0 10px;
+        font-size: 15px;
+      }
+
+      ul {
+        margin: 0;
+        padding-left: 18px;
+      }
+
+      li {
+        margin: 7px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      strong {
+        color: var(--ink);
+      }
+
+      @media (max-width: 980px) {
+        main {
+          width: min(100vw - 28px, 760px);
+          padding-top: 22px;
+        }
+
+        .flow,
+        .arrow-row,
+        .details {
+          grid-template-columns: 1fr;
+        }
+
+        .arrow-row {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Human-in-the-loop v1：Memory 写入/删除确认流</h1>
+        <p class="subtitle">
+          v1 只拦截 <code>save_memory</code> 和
+          <code>delete_memory</code>。Agent 触发高风险记忆操作时，先创建服务端
+          pending action 并暂停 SSE；用户确认后，服务端按已保存的 args
+          执行真实 memory service。
+        </p>
+      </header>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">端到端执行流程</h2>
+          <span class="badge">requires-action</span>
+        </div>
+
+        <div class="flow" aria-label="Human-in-the-loop v1 flow">
+          <div class="lane">
+            <h2 class="lane-title">前端页面</h2>
+            <div class="step">
+              <h3>1. 用户发送记忆请求</h3>
+              <p>
+                用户在 Memory Agent 或 Coordinator 中输入“请记住...”或“忘记...”。
+              </p>
+            </div>
+            <div class="step approval">
+              <h3>5. 展示确认卡片</h3>
+              <p>
+                SSE 收到 <code>tool_call.requires_action</code> 后，assistant-ui
+                将消息标记为 <code>requires-action</code> 并展示确认/取消按钮。
+              </p>
+            </div>
+            <div class="step">
+              <h3>6. 用户做决定</h3>
+              <p>
+                点击确认或取消，调用 <code>respondToApproval</code>，本地
+                runtime 自动恢复 run。
+              </p>
+            </div>
+          </div>
+
+          <div class="lane">
+            <h2 class="lane-title">Chat Runtime</h2>
+            <div class="step">
+              <h3>2. 发起 chat SSE</h3>
+              <p>
+                <code>chat-runtime-provider</code> 调用
+                <code>/api/tenants/:tenantId/chat</code>，并携带当前
+                <code>threadId</code>。
+              </p>
+            </div>
+            <div class="step approval">
+              <h3>7. 调用 approval API</h3>
+              <p>
+                恢复 run 时检测到已决 approval，转而请求
+                <code>/chat/approvals</code>，不再重新调用普通 chat。
+              </p>
+            </div>
+            <div class="step success">
+              <h3>10. 回填最终文本</h3>
+              <p>
+                将 approval API 返回的 final text 和 structured response
+                追加到当前 assistant message。
+              </p>
+            </div>
+          </div>
+
+          <div class="lane">
+            <h2 class="lane-title">Agent Runner</h2>
+            <div class="step">
+              <h3>3. 模型调用 memory 工具</h3>
+              <p>
+                Memory Agent 或 Coordinator 调用 <code>save_memory</code> /
+                <code>delete_memory</code>。
+              </p>
+            </div>
+            <div class="step approval">
+              <h3>4. 拦截并暂停</h3>
+              <p>
+                middleware 识别 gated tool，创建 pending action，发出
+                requires-action tool card，然后结束当前 SSE。
+              </p>
+            </div>
+            <div class="step">
+              <h3>8. 不信任前端 args</h3>
+              <p>
+                approval API 只读取服务端保存的 pending action 和 args，前端只提交
+                <code>approvalId</code>、<code>approved</code>、<code>reason</code>。
+              </p>
+            </div>
+          </div>
+
+          <div class="lane">
+            <h2 class="lane-title">Postgres</h2>
+            <div class="step approval">
+              <h3>Pending Action 表</h3>
+              <p>
+                <code>assistant_pending_actions</code> 保存 action、tool、args、
+                status、result，并按 tenant/user/thread 隔离。
+              </p>
+            </div>
+            <div class="step success">
+              <h3>9. 执行 memory service</h3>
+              <p>
+                确认后写入或删除 <code>assistant_memories</code>；取消则标记
+                rejected，不改长期记忆。
+              </p>
+            </div>
+            <div class="step success">
+              <h3>11. 持久化对话结果</h3>
+              <p>
+                最终文本写回 thread repository，侧边栏更新时间可正常刷新。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="arrow-row" aria-hidden="true">
+          <div class="arrow">SSE request</div>
+          <div class="arrow">agent invoke</div>
+          <div class="arrow">pending action</div>
+          <div class="arrow"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">关键边界</h2>
+          <span class="badge">v1 scope</span>
+        </div>
+        <div class="details">
+          <div class="card">
+            <h3>安全边界</h3>
+            <ul>
+              <li>
+                <strong>只 gate 两个工具：</strong>
+                <code>save_memory</code> 和 <code>delete_memory</code>。
+              </li>
+              <li>
+                <strong>只信任服务端 args：</strong>
+                approval API 不接受前端回传工具参数，避免篡改写入内容。
+              </li>
+              <li>
+                <strong>租户隔离：</strong>
+                pending action 和 memory 都按 tenant/user/thread 范围查询。
+              </li>
+              <li>
+                <strong>默认 30 分钟过期：</strong>
+                过期 action 不允许执行，需要重新发起。
+              </li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>后续 v1.1 建议</h3>
+            <ul>
+              <li>刷新页面后恢复 pending approval 卡片。</li>
+              <li>把 confirmed tool result 直接回填到原工具卡片。</li>
+              <li>增加 pending action 管理 API，便于排查和撤销。</li>
+              <li>将高风险 filesystem 写操作和外部 API 调用纳入同一 approval 框架。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

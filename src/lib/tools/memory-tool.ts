@@ -16,33 +16,7 @@ const memoryCategorySchema = z
 
 export function createMemoryTools(context: MemoryServiceContext) {
   return [
-    tool(
-      async ({ category = "general", content, metadata = {} }) =>
-        jsonResult(
-          await saveUserMemory(context, {
-            category,
-            content,
-            metadata,
-          }),
-        ),
-      {
-        name: "save_memory",
-        description:
-          "Save one explicit long-term user memory for the current tenant and user. Only call this when the user clearly asks you to remember or save something.",
-        schema: z.object({
-          content: z
-            .string()
-            .min(1)
-            .max(2_000)
-            .describe("The concise, factual memory content to remember."),
-          category: memoryCategorySchema,
-          metadata: z
-            .record(z.string(), z.unknown())
-            .optional()
-            .describe("Optional structured metadata for this memory."),
-        }),
-      },
-    ),
+    createSaveMemoryTool(context),
     tool(
       async ({ limit = 20, query }) =>
         jsonResult(
@@ -71,19 +45,56 @@ export function createMemoryTools(context: MemoryServiceContext) {
         }),
       },
     ),
-    tool(
-      async ({ memoryId }) =>
-        jsonResult(await deleteUserMemory(context, memoryId)),
-      {
-        name: "delete_memory",
-        description:
-          "Delete one explicit long-term memory for the current tenant and user by memory id. If the user does not provide a clear id, list memories first.",
-        schema: z.object({
-          memoryId: z.string().min(1).describe("The memory_id to delete."),
-        }),
-      },
-    ),
+    createDeleteMemoryTool(context),
   ];
+}
+
+export function createMemoryMutationTools(context: MemoryServiceContext) {
+  return [createSaveMemoryTool(context), createDeleteMemoryTool(context)];
+}
+
+function createSaveMemoryTool(context: MemoryServiceContext) {
+  return tool(
+    async ({ category = "general", content, metadata = {} }) =>
+      jsonResult(
+        await saveUserMemory(context, {
+          category,
+          content,
+          metadata,
+        }),
+      ),
+    {
+      name: "save_memory",
+      description:
+        "Save one explicit long-term user memory for the current tenant and user. Only call this when the user clearly asks you to remember or save something.",
+      schema: z.object({
+        content: z
+          .string()
+          .min(1)
+          .max(2_000)
+          .describe("The concise, factual memory content to remember."),
+        category: memoryCategorySchema,
+        metadata: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("Optional structured metadata for this memory."),
+      }),
+    },
+  );
+}
+
+function createDeleteMemoryTool(context: MemoryServiceContext) {
+  return tool(
+    async ({ memoryId }) => jsonResult(await deleteUserMemory(context, memoryId)),
+    {
+      name: "delete_memory",
+      description:
+        "Delete one explicit long-term memory for the current tenant and user by memory id. If the user does not provide a clear id, list memories first.",
+      schema: z.object({
+        memoryId: z.string().min(1).describe("The memory_id to delete."),
+      }),
+    },
+  );
 }
 
 function jsonResult(value: unknown) {

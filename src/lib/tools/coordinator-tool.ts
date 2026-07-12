@@ -9,6 +9,7 @@ import {
 import { queryUserMemories } from "@/lib/agent/services/memory-service";
 import { getWeatherForCity } from "@/lib/agent/services/weather-service";
 import type { AgentToolContext } from "@/lib/agent/core/agent-definition";
+import { createMemoryMutationTools } from "./memory-tool";
 
 type DelegateName = "filesystem" | "memory" | "weather";
 
@@ -143,6 +144,7 @@ export function createCoordinatorTools(context: AgentToolContext) {
         }),
       },
     ),
+    ...createMemoryMutationTools(context),
   ];
 }
 

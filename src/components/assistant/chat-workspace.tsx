@@ -657,25 +657,44 @@ function StructuredResponsePart({ data }: DataMessagePartProps) {
 }
 
 function ToolCallPart({
+  approval,
   args,
   argsText,
   isError,
   result,
+  respondToApproval,
   status,
   toolName,
 }: ToolCallMessagePartProps) {
   const retryInfo = getToolRetryInfo(args);
   const running = status.type === "running";
+  const approvalPending =
+    approval !== undefined &&
+    approval.approved === undefined &&
+    approval.resolution === undefined;
+  const approvalApproved = approval?.approved === true;
+  const approvalRejected = approval?.approved === false;
   const failed = isError || status.type === "incomplete";
-  const Icon = running ? LoaderCircle : failed ? AlertTriangle : CheckCircle2;
-  const statusText =
-    running && retryInfo
-      ? `重试 ${retryInfo.attempt}/${retryInfo.maxRetries}`
+  const Icon =
+    approvalPending || approvalRejected || failed
+      ? AlertTriangle
       : running
-        ? "运行中"
-        : failed
-          ? "失败"
-          : "完成";
+        ? LoaderCircle
+        : CheckCircle2;
+  let statusText = "完成";
+  if (approvalPending) {
+    statusText = "待确认";
+  } else if (approvalApproved) {
+    statusText = "已确认";
+  } else if (approvalRejected) {
+    statusText = "已取消";
+  } else if (running && retryInfo) {
+    statusText = `重试 ${retryInfo.attempt}/${retryInfo.maxRetries}`;
+  } else if (running) {
+    statusText = "运行中";
+  } else if (failed) {
+    statusText = "失败";
+  }
   const displayArgs = argsText || removeToolRetryInfo(args);
 
   return (
@@ -687,7 +706,7 @@ function ToolCallPart({
         </div>
         <span className="flex shrink-0 items-center gap-1.5 text-xs text-[#666666]">
           <Icon
-            className={running ? "animate-spin" : undefined}
+            className={running && !approvalPending ? "animate-spin" : undefined}
             size={14}
           />
           {statusText}
@@ -702,7 +721,45 @@ function ToolCallPart({
           </div>
         )}
         <ToolPayload label="参数" value={displayArgs} />
-        {!running && <ToolPayload label="结果" value={result} />}
+        {approvalPending && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
+            <div className="font-medium">该记忆操作需要你确认后才会执行。</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                className="rounded-md bg-[#111111] px-3 py-1.5 font-medium text-white transition-colors hover:bg-[#303030]"
+                onClick={() => respondToApproval({ approved: true })}
+                type="button"
+              >
+                确认执行
+              </button>
+              <button
+                className="rounded-md border border-amber-300 bg-white px-3 py-1.5 font-medium text-amber-900 transition-colors hover:bg-amber-100"
+                onClick={() =>
+                  respondToApproval({
+                    approved: false,
+                    reason: "用户取消",
+                  })
+                }
+                type="button"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        )}
+        {approvalApproved && result === undefined && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">
+            已确认，服务端会继续执行该记忆操作并返回结果。
+          </div>
+        )}
+        {approvalRejected && (
+          <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs leading-5 text-zinc-700">
+            已取消，本次不会修改长期记忆。
+          </div>
+        )}
+        {!running && !approvalPending && result !== undefined && (
+          <ToolPayload label="结果" value={result} />
+        )}
       </div>
     </div>
   );
