@@ -9,10 +9,20 @@ export type ClientMemoryStatus = "active" | "superseded" | "deleted";
 
 export type ClientMemoryListStatus = ClientMemoryStatus | "all";
 
+export type ClientMemoryExtraction = {
+  category: string;
+  confidence: number;
+  key: ClientMemoryKey;
+  reason?: string;
+  source: "model" | "rule";
+  value: string | null;
+};
+
 export type ClientStoredMemory = {
   category: string;
   content: string;
   createdAt: string;
+  extraction: ClientMemoryExtraction | null;
   memoryId: string;
   memoryKey: ClientMemoryKey;
   metadata: Record<string, unknown>;

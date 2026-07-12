@@ -1,7 +1,7 @@
 import {
   deleteMemory,
+  extractMemoryByRules,
   hasMemoryStore,
-  inferMemoryKey,
   listMemories,
   previewSaveMemory,
   restoreMemory,
@@ -96,14 +96,17 @@ export async function saveUserMemory(
   }
 
   const normalizedContent = content.trim();
+  const normalizedCategory = normalizeCategory(category);
   if (!normalizedContent) {
     return createMemoryError("invalid_content", "Memory content cannot be empty.");
   }
+  const extraction = extractMemoryByRules(normalizedCategory, normalizedContent);
 
   const memory = await saveMemory(scope, {
-    category: normalizeCategory(category),
+    category: normalizedCategory,
     content: normalizedContent,
-    memoryKey: inferMemoryKey(category ?? "general", normalizedContent),
+    extraction,
+    memoryKey: extraction.key,
     metadata,
     sourceThreadId: context.threadId,
   });
@@ -115,9 +118,7 @@ export async function saveUserMemory(
   return {
     ok: true,
     memory,
-    summary: memory.memoryId
-      ? `已保存记忆 ${memory.memoryId}：${memory.content}`
-      : `已保存记忆：${memory.content}`,
+    summary: createSavedMemorySummary(memory),
   };
 }
 
@@ -259,8 +260,8 @@ export async function previewSaveUserMemory(
     ok: true,
     preview,
     summary: preview.willReplace && preview.replacedMemory
-      ? `这条记忆会覆盖 ${preview.memoryKey} 下的旧记忆：${preview.replacedMemory.content}`
-      : `这条记忆会保存为 ${preview.memoryKey}。`,
+      ? `这条记忆会覆盖 ${preview.memoryKey}：${formatMemoryValue(preview.replacedValue)} -> ${formatMemoryValue(preview.newValue)}`
+      : `这条记忆会保存为 ${preview.memoryKey}${preview.newValue ? `=${preview.newValue}` : ""}。`,
   };
 }
 
@@ -297,11 +298,27 @@ function summarizeMemories(
     : `找到 ${memories.length} 条 ${status} 长期记忆：`;
   const memoryLines = memories.map((memory) =>
     memory.memoryId
-      ? `- ${memory.content}（${memory.category}，${memory.memoryKey}，${memory.status}，id: ${memory.memoryId}）`
-      : `- ${memory.content}（${memory.category}，${memory.memoryKey}，${memory.status}）`,
+      ? `- ${memory.content}（${memory.category}，${formatMemoryKeyValue(memory)}，${memory.status}，id: ${memory.memoryId}）`
+      : `- ${memory.content}（${memory.category}，${formatMemoryKeyValue(memory)}，${memory.status}）`,
   );
 
   return [prefix, ...memoryLines].join("\n");
+}
+
+function createSavedMemorySummary(memory: StoredMemory) {
+  const idPart = memory.memoryId ? ` ${memory.memoryId}` : "";
+  const keyValue = formatMemoryKeyValue(memory);
+  return `已保存记忆${idPart}：${memory.content}（${keyValue}）`;
+}
+
+function formatMemoryKeyValue(memory: StoredMemory) {
+  return memory.extraction?.value
+    ? `${memory.memoryKey}=${memory.extraction.value}`
+    : memory.memoryKey;
+}
+
+function formatMemoryValue(value: string | null) {
+  return value ?? "未提取";
 }
 
 function createMissingContextError() {

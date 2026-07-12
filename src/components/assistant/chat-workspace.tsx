@@ -720,11 +720,23 @@ function MemoryPanelItem({
       </div>
 
       <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[#222222]">
-        {memory.content}
+        {memory.extraction?.value ?? memory.content}
       </p>
+      {memory.extraction?.value && (
+        <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-[#666666]">
+          原文：{memory.content}
+        </p>
+      )}
 
       <div className="mt-3 space-y-1 text-xs leading-5 text-[#777777]">
         <div>分类：{memory.category}</div>
+        {memory.extraction && (
+          <div>
+            提取：{memory.extraction.source} ·{" "}
+            {formatMemoryConfidence(memory.extraction.confidence)}
+            {memory.extraction.value ? ` · value=${memory.extraction.value}` : ""}
+          </div>
+        )}
         <div>memory_id：{memory.memoryId}</div>
         {memory.sourceThreadId && <div>来源会话：{memory.sourceThreadId}</div>}
         <div>创建：{formatMemoryDate(memory.createdAt)}</div>
@@ -794,6 +806,14 @@ function formatMemoryDate(value: string) {
     dateStyle: "short",
     timeStyle: "short",
   });
+}
+
+function formatMemoryConfidence(value: number) {
+  if (!Number.isFinite(value)) {
+    return "0%";
+  }
+
+  return `${Math.round(Math.min(Math.max(value, 0), 1) * 100)}%`;
 }
 
 function Thread() {
@@ -1098,11 +1118,21 @@ function ToolCallPart({
 type ApprovalPreviewData = {
   category: string;
   content: string;
+  extraction: {
+    category: string;
+    confidence: number;
+    key: string;
+    reason?: string;
+    source: string;
+    value: string | null;
+  } | null;
   memoryKey: string;
+  newValue: string | null;
   replacedMemory: {
     content: string;
     updatedAt?: string;
   } | null;
+  replacedValue: string | null;
   willReplace: boolean;
 };
 
@@ -1117,9 +1147,27 @@ function ApprovalPreview({ preview }: { preview: ApprovalPreviewData }) {
         <span className="font-medium">memory_key：</span>
         {memoryKeyLabels[preview.memoryKey] ?? preview.memoryKey}
       </div>
+      {preview.extraction && (
+        <div className="grid gap-1 rounded-md bg-white px-2 py-1.5">
+          <div>
+            <span className="font-medium">value：</span>
+            {preview.extraction.value ?? "未提取"}
+          </div>
+          <div>
+            <span className="font-medium">提取：</span>
+            {preview.extraction.source} ·{" "}
+            {formatMemoryConfidence(preview.extraction.confidence)}
+            {preview.extraction.reason ? ` · ${preview.extraction.reason}` : ""}
+          </div>
+        </div>
+      )}
       {preview.willReplace && preview.replacedMemory ? (
         <div className="rounded-md bg-amber-100/70 px-2 py-1.5">
           <div className="font-medium">将覆盖旧记忆</div>
+          <div className="mt-1 text-amber-950">
+            值变化：{preview.replacedValue ?? "未提取"} -&gt;{" "}
+            {preview.newValue ?? "未提取"}
+          </div>
           <div className="mt-1 text-amber-950">
             {preview.replacedMemory.content}
           </div>
@@ -1158,6 +1206,7 @@ function getApprovalPreview(approval: unknown): ApprovalPreviewData | null {
   const content = typeof preview.content === "string" ? preview.content : "";
   const memoryKey =
     typeof preview.memoryKey === "string" ? preview.memoryKey : "general";
+  const extraction = parseApprovalExtraction(preview.extraction);
   if (!content) {
     return null;
   }
@@ -1165,9 +1214,31 @@ function getApprovalPreview(approval: unknown): ApprovalPreviewData | null {
   return {
     category: typeof preview.category === "string" ? preview.category : "general",
     content,
+    extraction,
     memoryKey,
+    newValue: typeof preview.newValue === "string" ? preview.newValue : null,
     replacedMemory,
+    replacedValue:
+      typeof preview.replacedValue === "string" ? preview.replacedValue : null,
     willReplace: preview.willReplace === true,
+  };
+}
+
+function parseApprovalExtraction(
+  value: unknown,
+): ApprovalPreviewData["extraction"] {
+  if (!isPlainRecord(value)) {
+    return null;
+  }
+
+  return {
+    category: typeof value.category === "string" ? value.category : "general",
+    confidence:
+      typeof value.confidence === "number" ? value.confidence : 0,
+    key: typeof value.key === "string" ? value.key : "general",
+    reason: typeof value.reason === "string" ? value.reason : undefined,
+    source: typeof value.source === "string" ? value.source : "rule",
+    value: typeof value.value === "string" ? value.value : null,
   };
 }
 
