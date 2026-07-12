@@ -21,6 +21,7 @@ export type ChatStreamEvent =
           confirm?: boolean | { title?: string; description?: string };
         }>;
         optionId?: string;
+        preview?: unknown;
         resolution?: "cancelled" | "expired";
       };
       retry?: {

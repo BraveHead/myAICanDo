@@ -13,6 +13,14 @@ export type MemoryKey =
   | "profile.nickname"
   | "general";
 
+export const MEMORY_KEYS = [
+  "preference.answer_language",
+  "preference.answer_style",
+  "profile.current_location",
+  "profile.nickname",
+  "general",
+] as const satisfies readonly MemoryKey[];
+
 export type MemoryStatus = "active" | "superseded" | "deleted";
 
 export type MemoryListStatus = MemoryStatus | "all";
@@ -30,6 +38,14 @@ export type StoredMemory = {
   updatedAt: string;
   validFrom: string;
   validTo: string | null;
+};
+
+export type MemorySavePreview = {
+  category: string;
+  content: string;
+  memoryKey: MemoryKey;
+  replacedMemory: StoredMemory | null;
+  willReplace: boolean;
 };
 
 type MemoryRow = {
@@ -262,10 +278,12 @@ export async function listMemories(
   scope: MemoryScope,
   {
     limit = 20,
+    memoryKey,
     query,
     status = "active",
   }: {
     limit?: number;
+    memoryKey?: MemoryKey;
     query?: string;
     status?: MemoryListStatus;
   } = {},
@@ -278,6 +296,9 @@ export async function listMemories(
 
   const normalizedQuery = query?.trim() || null;
   const boundedLimit = Math.min(Math.max(limit, 1), 50);
+  const normalizedMemoryKey = memoryKey
+    ? normalizeMemoryKey(memoryKey)
+    : null;
   const normalizedStatus = normalizeMemoryListStatus(status);
   const result = await getPostgresPool().query<MemoryRow>(
     `
@@ -287,19 +308,21 @@ export async function listMemories(
         tenant_hash_id = $1
         AND user_hash_id = $2
         AND ($3::text = 'all' OR status = $3)
+        AND ($4::text IS NULL OR memory_key = $4)
         AND (
-          $4::text IS NULL
-          OR content ILIKE '%' || $4 || '%'
-          OR category ILIKE '%' || $4 || '%'
-          OR memory_key ILIKE '%' || $4 || '%'
+          $5::text IS NULL
+          OR content ILIKE '%' || $5 || '%'
+          OR category ILIKE '%' || $5 || '%'
+          OR memory_key ILIKE '%' || $5 || '%'
         )
       ORDER BY updated_at DESC, created_at DESC, id DESC
-      LIMIT $5
+      LIMIT $6
     `,
     [
       scope.tenantHashId,
       scope.userHashId,
       normalizedStatus,
+      normalizedMemoryKey,
       normalizedQuery,
       boundedLimit,
     ],
@@ -332,6 +355,141 @@ export async function deleteMemory(scope: MemoryScope, memoryId: string) {
   );
 
   return Number(result.rowCount ?? 0) > 0;
+}
+
+export async function restoreMemory(scope: MemoryScope, memoryId: string) {
+  if (!hasDatabaseUrl()) {
+    return null;
+  }
+
+  await ensureMemoryStore();
+
+  const client = await getPostgresPool().connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const targetResult = await client.query<MemoryRow>(
+      `
+        SELECT ${MEMORY_RETURNING_COLUMNS}
+        FROM public.assistant_memories
+        WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND memory_id = $3
+        FOR UPDATE
+      `,
+      [scope.tenantHashId, scope.userHashId, memoryId],
+    );
+    const target = targetResult.rows[0];
+    if (!target) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+
+    const memoryKey = normalizeMemoryKey(target.memory_key);
+    if (memoryKey !== "general") {
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+        [`memory:${scope.tenantHashId}:${scope.userHashId}:${memoryKey}`],
+      );
+
+      await client.query(
+        `
+          UPDATE public.assistant_memories
+          SET
+            status = 'superseded',
+            valid_to = NOW(),
+            superseded_by_memory_id = $4,
+            updated_at = NOW()
+          WHERE
+            tenant_hash_id = $1
+            AND user_hash_id = $2
+            AND memory_key = $3
+            AND memory_id <> $4
+            AND status = 'active'
+        `,
+        [scope.tenantHashId, scope.userHashId, memoryKey, memoryId],
+      );
+    }
+
+    const restored = await client.query<MemoryRow>(
+      `
+        UPDATE public.assistant_memories
+        SET
+          status = 'active',
+          valid_from = NOW(),
+          valid_to = NULL,
+          superseded_by_memory_id = NULL,
+          updated_at = NOW()
+        WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND memory_id = $3
+        RETURNING ${MEMORY_RETURNING_COLUMNS}
+      `,
+      [scope.tenantHashId, scope.userHashId, memoryId],
+    );
+
+    await client.query("COMMIT");
+    return rowToStoredMemory(restored.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function previewSaveMemory(
+  scope: MemoryScope,
+  {
+    category,
+    content,
+  }: {
+    category: string;
+    content: string;
+  },
+): Promise<MemorySavePreview | null> {
+  if (!hasDatabaseUrl()) {
+    return null;
+  }
+
+  await ensureMemoryStore();
+
+  const normalizedCategory = category.trim() || "general";
+  const normalizedContent = content.trim();
+  const memoryKey = inferMemoryKey(normalizedCategory, normalizedContent);
+  if (memoryKey === "general") {
+    return {
+      category: normalizedCategory,
+      content: normalizedContent,
+      memoryKey,
+      replacedMemory: null,
+      willReplace: false,
+    };
+  }
+
+  const result = await getPostgresPool().query<MemoryRow>(
+    `
+      SELECT ${MEMORY_RETURNING_COLUMNS}
+      FROM public.assistant_memories
+      WHERE
+        tenant_hash_id = $1
+        AND user_hash_id = $2
+        AND memory_key = $3
+        AND status = 'active'
+      ORDER BY updated_at DESC, created_at DESC, id DESC
+      LIMIT 1
+    `,
+    [scope.tenantHashId, scope.userHashId, memoryKey],
+  );
+  const replacedMemory = result.rows[0]
+    ? rowToStoredMemory(result.rows[0])
+    : null;
+
+  return {
+    category: normalizedCategory,
+    content: normalizedContent,
+    memoryKey,
+    replacedMemory,
+    willReplace:
+      replacedMemory !== null && replacedMemory.content !== normalizedContent,
+  };
 }
 
 export function formatMemoriesForPrompt(memories: StoredMemory[]) {
@@ -611,17 +769,8 @@ function rowToStoredMemory(row: MemoryRow): StoredMemory {
   };
 }
 
-function normalizeMemoryKey(value: string): MemoryKey {
-  if (
-    value === "preference.answer_language" ||
-    value === "preference.answer_style" ||
-    value === "profile.current_location" ||
-    value === "profile.nickname"
-  ) {
-    return value;
-  }
-
-  return "general";
+export function normalizeMemoryKey(value: string): MemoryKey {
+  return MEMORY_KEYS.find((key) => key === value) ?? "general";
 }
 
 function normalizeMemoryStatus(value: string): MemoryStatus {

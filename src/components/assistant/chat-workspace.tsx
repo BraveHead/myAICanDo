@@ -27,15 +27,25 @@ import {
   PanelLeft,
   PenLine,
   Plus,
+  RotateCcw,
+  Search,
   Send,
   Sparkles,
   SunMedium,
+  Trash2,
   Wrench,
   X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   createTransientThread,
   getThreadTitle,
@@ -46,6 +56,13 @@ import {
   type StoredThread,
 } from "@/lib/thread-storage";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
+import {
+  deleteMemoryOnServer,
+  loadMemoriesFromServer,
+  restoreMemoryOnServer,
+  type ClientMemoryListStatus,
+  type ClientStoredMemory,
+} from "@/lib/memory-client";
 import { getThreadPath } from "@/lib/thread-routes";
 
 type Suggestion = {
@@ -134,6 +151,30 @@ const suggestions: Suggestion[] = [
 
 const modelLabel = process.env.NEXT_PUBLIC_MODEL_LABEL || "GPT-4o Mini";
 
+const memoryStatusTabs = [
+  { label: "Active", value: "active" },
+  { label: "Replaced", value: "superseded" },
+  { label: "Deleted", value: "deleted" },
+  { label: "All", value: "all" },
+] as const satisfies ReadonlyArray<{
+  label: string;
+  value: ClientMemoryListStatus;
+}>;
+
+const memoryKeyLabels: Record<string, string> = {
+  "preference.answer_language": "回答语言",
+  "preference.answer_style": "回答风格",
+  "profile.current_location": "当前位置",
+  "profile.nickname": "称呼",
+  general: "通用",
+};
+
+const memoryStatusLabels: Record<string, string> = {
+  active: "有效",
+  deleted: "已删除",
+  superseded: "已覆盖",
+};
+
 type ChatWorkspaceProps = {
   initialThreadId?: string;
   tenantHashId: string;
@@ -173,6 +214,7 @@ function ChatWorkspaceContent({
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
   const switchingRef = useRef(false);
   const previousRunningRef = useRef(false);
 
@@ -446,26 +488,312 @@ function ChatWorkspaceContent({
               {activeThread?.title || "New Chat"}
             </h1>
           </div>
-          <Link
-            className="grid size-8 place-items-center rounded-md text-[#7b7b7b] hover:bg-[#f5f5f5]"
-            href="/switch-tenant"
-            title="切换租户"
-          >
-            <Building2 size={18} />
-          </Link>
-          <button
-            className="grid size-8 place-items-center rounded-md text-[#7b7b7b] hover:bg-[#f5f5f5]"
-            title="Share"
-            type="button"
-          >
-            <Sparkles size={18} />
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              className="grid size-8 place-items-center rounded-md text-[#7b7b7b] hover:bg-[#f5f5f5]"
+              onClick={() => setMemoryPanelOpen(true)}
+              title="我的记忆"
+              type="button"
+            >
+              <Brain size={18} />
+            </button>
+            <Link
+              className="grid size-8 place-items-center rounded-md text-[#7b7b7b] hover:bg-[#f5f5f5]"
+              href="/switch-tenant"
+              title="切换租户"
+            >
+              <Building2 size={18} />
+            </Link>
+            <button
+              className="grid size-8 place-items-center rounded-md text-[#7b7b7b] hover:bg-[#f5f5f5]"
+              title="Share"
+              type="button"
+            >
+              <Sparkles size={18} />
+            </button>
+          </div>
         </div>
 
         <Thread />
       </section>
+
+      {memoryPanelOpen && (
+        <MemoryPanel
+          onClose={() => setMemoryPanelOpen(false)}
+          tenantHashId={tenantHashId}
+        />
+      )}
     </>
   );
+}
+
+function MemoryPanel({
+  onClose,
+  tenantHashId,
+}: {
+  onClose: () => void;
+  tenantHashId: string;
+}) {
+  const [status, setStatus] = useState<ClientMemoryListStatus>("active");
+  const [query, setQuery] = useState("");
+  const [memories, setMemories] = useState<ClientStoredMemory[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [mutatingId, setMutatingId] = useState<string | null>(null);
+
+  const refreshMemories = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setMemories(
+        await loadMemoriesFromServer(tenantHashId, {
+          query,
+          status,
+        }),
+      );
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error ? loadError.message : "记忆列表加载失败。",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [query, status, tenantHashId]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void refreshMemories();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [refreshMemories]);
+
+  const handleDeleteMemory = useCallback(
+    async (memory: ClientStoredMemory) => {
+      if (!window.confirm(`确认删除这条记忆？\n\n${memory.content}`)) {
+        return;
+      }
+
+      setMutatingId(memory.memoryId);
+      setError(null);
+      try {
+        await deleteMemoryOnServer(tenantHashId, memory.memoryId);
+        await refreshMemories();
+      } catch (deleteError) {
+        setError(
+          deleteError instanceof Error ? deleteError.message : "记忆删除失败。",
+        );
+      } finally {
+        setMutatingId(null);
+      }
+    },
+    [refreshMemories, tenantHashId],
+  );
+
+  const handleRestoreMemory = useCallback(
+    async (memory: ClientStoredMemory) => {
+      setMutatingId(memory.memoryId);
+      setError(null);
+      try {
+        await restoreMemoryOnServer(tenantHashId, memory.memoryId);
+        await refreshMemories();
+      } catch (restoreError) {
+        setError(
+          restoreError instanceof Error ? restoreError.message : "记忆恢复失败。",
+        );
+      } finally {
+        setMutatingId(null);
+      }
+    },
+    [refreshMemories, tenantHashId],
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/10">
+      <aside className="flex h-full w-full max-w-[440px] flex-col border-l border-[#e8e8e8] bg-white shadow-[-8px_0_30px_rgba(0,0,0,0.08)]">
+        <div className="flex h-16 shrink-0 items-center justify-between border-b border-[#eeeeee] px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <Brain size={20} />
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-[#171717]">
+                我的记忆
+              </div>
+              <div className="truncate font-mono text-xs text-[#777777]">
+                {tenantHashId}
+              </div>
+            </div>
+          </div>
+          <button
+            className="grid size-8 place-items-center rounded-md text-[#666666] hover:bg-[#f5f5f5]"
+            onClick={onClose}
+            title="关闭"
+            type="button"
+          >
+            <X size={17} />
+          </button>
+        </div>
+
+        <div className="space-y-3 border-b border-[#eeeeee] px-5 py-4">
+          <div className="grid grid-cols-4 gap-1 rounded-lg bg-[#f5f5f5] p-1">
+            {memoryStatusTabs.map((tab) => (
+              <button
+                className={`h-8 rounded-md text-xs font-medium transition-colors ${
+                  status === tab.value
+                    ? "bg-white text-[#111111] shadow-sm"
+                    : "text-[#666666] hover:text-[#222222]"
+                }`}
+                key={tab.value}
+                onClick={() => setStatus(tab.value)}
+                type="button"
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <label className="flex h-10 items-center gap-2 rounded-lg border border-[#e3e3e3] px-3 text-sm">
+            <Search className="shrink-0 text-[#777777]" size={16} />
+            <input
+              className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-[#9a9a9a]"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索内容、分类或 memory key"
+              value={query}
+            />
+          </label>
+        </div>
+
+        <div className="chat-scrollbar min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {error && (
+            <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          {loading ? (
+            <div className="flex items-center gap-2 py-8 text-sm text-[#777777]">
+              <LoaderCircle className="animate-spin" size={16} />
+              加载记忆中
+            </div>
+          ) : memories.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-[#dddddd] px-4 py-8 text-center text-sm text-[#777777]">
+              当前筛选条件下没有记忆。
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {memories.map((memory) => (
+                <MemoryPanelItem
+                  key={memory.memoryId}
+                  memory={memory}
+                  mutating={mutatingId === memory.memoryId}
+                  onDelete={handleDeleteMemory}
+                  onRestore={handleRestoreMemory}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function MemoryPanelItem({
+  memory,
+  mutating,
+  onDelete,
+  onRestore,
+}: {
+  memory: ClientStoredMemory;
+  mutating: boolean;
+  onDelete: (memory: ClientStoredMemory) => void;
+  onRestore: (memory: ClientStoredMemory) => void;
+}) {
+  return (
+    <article className="rounded-xl border border-[#e8e8e8] bg-[#fbfbfb] p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <MemoryBadge tone="key">
+          {memoryKeyLabels[memory.memoryKey] ?? memory.memoryKey}
+        </MemoryBadge>
+        <MemoryBadge tone={memory.status}>{memoryStatusLabels[memory.status]}</MemoryBadge>
+      </div>
+
+      <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[#222222]">
+        {memory.content}
+      </p>
+
+      <div className="mt-3 space-y-1 text-xs leading-5 text-[#777777]">
+        <div>分类：{memory.category}</div>
+        <div>memory_id：{memory.memoryId}</div>
+        {memory.sourceThreadId && <div>来源会话：{memory.sourceThreadId}</div>}
+        <div>创建：{formatMemoryDate(memory.createdAt)}</div>
+        <div>更新：{formatMemoryDate(memory.updatedAt)}</div>
+        {memory.validTo && <div>失效：{formatMemoryDate(memory.validTo)}</div>}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {memory.status === "active" ? (
+          <button
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-red-200 bg-white px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
+            disabled={mutating}
+            onClick={() => onDelete(memory)}
+            type="button"
+          >
+            <Trash2 size={14} />
+            删除
+          </button>
+        ) : (
+          <button
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-200 bg-white px-2.5 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+            disabled={mutating}
+            onClick={() => onRestore(memory)}
+            type="button"
+          >
+            <RotateCcw size={14} />
+            恢复
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function MemoryBadge({
+  children,
+  tone,
+}: {
+  children: ReactNode;
+  tone: "active" | "deleted" | "key" | "superseded";
+}) {
+  const className =
+    tone === "active"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      : tone === "deleted"
+        ? "border-red-200 bg-red-50 text-red-700"
+        : tone === "superseded"
+          ? "border-amber-200 bg-amber-50 text-amber-800"
+          : "border-zinc-200 bg-white text-zinc-700";
+
+  return (
+    <span
+      className={`inline-flex h-6 items-center rounded-full border px-2 text-xs font-medium ${className}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+function formatMemoryDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString("zh-CN", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
 }
 
 function Thread() {
@@ -674,6 +1002,7 @@ function ToolCallPart({
     approval.resolution === undefined;
   const approvalApproved = approval?.approved === true;
   const approvalRejected = approval?.approved === false;
+  const approvalPreview = getApprovalPreview(approval);
   const failed = isError || status.type === "incomplete";
   const Icon =
     approvalPending || approvalRejected || failed
@@ -724,6 +1053,7 @@ function ToolCallPart({
         {approvalPending && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
             <div className="font-medium">该记忆操作需要你确认后才会执行。</div>
+            {approvalPreview && <ApprovalPreview preview={approvalPreview} />}
             <div className="mt-2 flex flex-wrap gap-2">
               <button
                 className="rounded-md bg-[#111111] px-3 py-1.5 font-medium text-white transition-colors hover:bg-[#303030]"
@@ -765,6 +1095,82 @@ function ToolCallPart({
   );
 }
 
+type ApprovalPreviewData = {
+  category: string;
+  content: string;
+  memoryKey: string;
+  replacedMemory: {
+    content: string;
+    updatedAt?: string;
+  } | null;
+  willReplace: boolean;
+};
+
+function ApprovalPreview({ preview }: { preview: ApprovalPreviewData }) {
+  return (
+    <div className="mt-2 space-y-2 rounded-md border border-amber-200 bg-white/70 px-3 py-2">
+      <div>
+        <span className="font-medium">新记忆：</span>
+        {preview.content}
+      </div>
+      <div>
+        <span className="font-medium">memory_key：</span>
+        {memoryKeyLabels[preview.memoryKey] ?? preview.memoryKey}
+      </div>
+      {preview.willReplace && preview.replacedMemory ? (
+        <div className="rounded-md bg-amber-100/70 px-2 py-1.5">
+          <div className="font-medium">将覆盖旧记忆</div>
+          <div className="mt-1 text-amber-950">
+            {preview.replacedMemory.content}
+          </div>
+          {preview.replacedMemory.updatedAt && (
+            <div className="mt-1 text-[11px] text-amber-800">
+              更新时间：{formatMemoryDate(preview.replacedMemory.updatedAt)}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div>不会覆盖现有 active 记忆。</div>
+      )}
+    </div>
+  );
+}
+
+function getApprovalPreview(approval: unknown): ApprovalPreviewData | null {
+  if (!isPlainRecord(approval) || !isPlainRecord(approval.preview)) {
+    return null;
+  }
+
+  const preview = approval.preview;
+  const replacedMemory = isPlainRecord(preview.replacedMemory)
+    ? {
+        content:
+          typeof preview.replacedMemory.content === "string"
+            ? preview.replacedMemory.content
+            : "",
+        updatedAt:
+          typeof preview.replacedMemory.updatedAt === "string"
+            ? preview.replacedMemory.updatedAt
+            : undefined,
+      }
+    : null;
+
+  const content = typeof preview.content === "string" ? preview.content : "";
+  const memoryKey =
+    typeof preview.memoryKey === "string" ? preview.memoryKey : "general";
+  if (!content) {
+    return null;
+  }
+
+  return {
+    category: typeof preview.category === "string" ? preview.category : "general",
+    content,
+    memoryKey,
+    replacedMemory,
+    willReplace: preview.willReplace === true,
+  };
+}
+
 type ToolRetryInfo = {
   attempt: number;
   error?: string;
@@ -800,13 +1206,17 @@ function getToolRetryInfo(args: unknown): ToolRetryInfo | null {
 }
 
 function removeToolRetryInfo(args: unknown) {
-  if (!args || typeof args !== "object" || Array.isArray(args)) {
+  if (!isPlainRecord(args)) {
     return args;
   }
 
-  const rest = { ...(args as Record<string, unknown>) };
+  const rest = { ...args };
   delete rest.__retry;
   return rest;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function formatRetryDelay(delayMs: number) {

@@ -22,6 +22,7 @@ import {
 } from "./chat-model";
 import { createRequestLogger, logger, toLogError } from "@/lib/server/logger";
 import { createPendingAction } from "@/lib/server/pending-action-store";
+import { previewSaveMemory } from "@/lib/server/memory-store";
 import { getPostgresPool, hasDatabaseUrl } from "@/lib/server/postgres";
 import {
   loadThreadAgentMessages,
@@ -575,6 +576,12 @@ async function createToolApprovalAction({
     throw new Error("人工确认工具需要 tenant/user/thread 上下文。");
   }
 
+  const preview = await createApprovalPreview({
+    args,
+    threadScope: approvalContext.threadScope,
+    toolName,
+  });
+
   const pendingAction = await createPendingAction(approvalContext.threadScope, {
     agentId: approvalContext.agentId,
     args,
@@ -591,6 +598,7 @@ async function createToolApprovalAction({
     actionId: pendingAction.actionId,
     agentId: approvalContext.agentId,
     args,
+    preview,
     toolCallId,
     toolName,
   } satisfies ApprovalPendingPayload;
@@ -616,7 +624,37 @@ function createToolApprovalPayload(action: ApprovalPendingPayload) {
         description: "取消本次工具调用，不修改长期记忆。",
       },
     ],
+    ...(action.preview ? { preview: action.preview } : {}),
   };
+}
+
+async function createApprovalPreview({
+  args,
+  threadScope,
+  toolName,
+}: {
+  args: unknown;
+  threadScope: ThreadScope;
+  toolName: ApprovalGatedToolName;
+}) {
+  if (toolName !== "save_memory" || !isRecord(args)) {
+    return undefined;
+  }
+
+  const content = typeof args.content === "string" ? args.content.trim() : "";
+  if (!content) {
+    return undefined;
+  }
+
+  const category =
+    typeof args.category === "string" && args.category.trim()
+      ? args.category
+      : "general";
+
+  return (await previewSaveMemory(threadScope, {
+    category,
+    content,
+  })) ?? undefined;
 }
 
 function createApprovalRequiredMessage(

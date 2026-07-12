@@ -1,4 +1,5 @@
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
+import type { MemorySavePreview } from "@/lib/server/memory-store";
 
 export const APPROVAL_GATED_TOOL_NAMES = [
   "save_memory",
@@ -45,6 +46,7 @@ export type ApprovalPendingPayload = {
   actionId: string;
   agentId: SupportedAgent;
   args: unknown;
+  preview?: MemorySavePreview;
   toolCallId: string;
   toolName: ApprovalGatedToolName;
 };

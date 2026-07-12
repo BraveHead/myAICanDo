@@ -3,7 +3,12 @@ import {
   hasMemoryStore,
   inferMemoryKey,
   listMemories,
+  previewSaveMemory,
+  restoreMemory,
   saveMemory,
+  type MemoryKey,
+  type MemoryListStatus,
+  type MemorySavePreview,
   type MemoryScope,
   type StoredMemory,
 } from "@/lib/server/memory-store";
@@ -31,6 +36,7 @@ export type QueryUserMemoriesResult =
       count: number;
       memories: StoredMemory[];
       ok: true;
+      status: MemoryListStatus;
       query: string | null;
       summary: string;
     }
@@ -41,6 +47,23 @@ export type DeleteUserMemoryResult =
       deleted: true;
       memoryId: string;
       ok: true;
+      summary: string;
+    }
+  | MemoryServiceErrorResult;
+
+export type RestoreUserMemoryResult =
+  | {
+      memory: StoredMemory;
+      ok: true;
+      restored: true;
+      summary: string;
+    }
+  | MemoryServiceErrorResult;
+
+export type PreviewSaveUserMemoryResult =
+  | {
+      ok: true;
+      preview: MemorySavePreview;
       summary: string;
     }
   | MemoryServiceErrorResult;
@@ -101,11 +124,17 @@ export async function saveUserMemory(
 export async function queryUserMemories(
   context: MemoryServiceContext,
   {
+    includeHistory = false,
     limit = 20,
+    memoryKey,
     query,
+    status,
   }: {
+    includeHistory?: boolean;
     limit?: number;
+    memoryKey?: MemoryKey;
     query?: string;
+    status?: MemoryListStatus;
   } = {},
 ): Promise<QueryUserMemoriesResult> {
   const scope = getMemoryScope(context);
@@ -118,17 +147,21 @@ export async function queryUserMemories(
   }
 
   const normalizedQuery = query?.trim() || undefined;
+  const resolvedStatus = status ?? (includeHistory ? "all" : "active");
   const memories = await listMemories(scope, {
     limit,
+    memoryKey,
     query: normalizedQuery,
+    status: resolvedStatus,
   });
 
   return {
     ok: true,
     memories,
     count: memories.length,
+    status: resolvedStatus,
     query: normalizedQuery ?? null,
-    summary: summarizeMemories(memories, normalizedQuery),
+    summary: summarizeMemories(memories, normalizedQuery, resolvedStatus),
   };
 }
 
@@ -161,6 +194,76 @@ export async function deleteUserMemory(
   };
 }
 
+export async function restoreUserMemory(
+  context: MemoryServiceContext,
+  memoryId: string,
+): Promise<RestoreUserMemoryResult> {
+  const scope = getMemoryScope(context);
+  if (!scope) {
+    return createMissingContextError();
+  }
+
+  if (!hasMemoryStore()) {
+    return createMemoryStoreUnavailableError();
+  }
+
+  const memory = await restoreMemory(scope, memoryId);
+  if (!memory) {
+    return createMemoryError(
+      "memory_not_found",
+      "No memory with this id exists for the current tenant and user.",
+    );
+  }
+
+  return {
+    ok: true,
+    restored: true,
+    memory,
+    summary: `已恢复记忆 ${memory.memoryId}：${memory.content}`,
+  };
+}
+
+export async function previewSaveUserMemory(
+  context: MemoryServiceContext,
+  {
+    category = "general",
+    content,
+  }: {
+    category?: string;
+    content: string;
+  },
+): Promise<PreviewSaveUserMemoryResult> {
+  const scope = getMemoryScope(context);
+  if (!scope) {
+    return createMissingContextError();
+  }
+
+  if (!hasMemoryStore()) {
+    return createMemoryStoreUnavailableError();
+  }
+
+  const normalizedContent = content.trim();
+  if (!normalizedContent) {
+    return createMemoryError("invalid_content", "Memory content cannot be empty.");
+  }
+
+  const preview = await previewSaveMemory(scope, {
+    category: normalizeCategory(category),
+    content: normalizedContent,
+  });
+  if (!preview) {
+    return createMemoryStoreUnavailableError();
+  }
+
+  return {
+    ok: true,
+    preview,
+    summary: preview.willReplace && preview.replacedMemory
+      ? `这条记忆会覆盖 ${preview.memoryKey} 下的旧记忆：${preview.replacedMemory.content}`
+      : `这条记忆会保存为 ${preview.memoryKey}。`,
+  };
+}
+
 function getMemoryScope(context: MemoryServiceContext) {
   if (!context.threadScope) {
     return null;
@@ -176,20 +279,26 @@ function normalizeCategory(category: string | undefined) {
   return category?.trim() || "general";
 }
 
-function summarizeMemories(memories: StoredMemory[], query: string | undefined) {
+function summarizeMemories(
+  memories: StoredMemory[],
+  query: string | undefined,
+  status: MemoryListStatus,
+) {
   if (memories.length === 0) {
     return query
       ? `没有找到匹配“${query}”的长期记忆。`
-      : "当前用户还没有保存长期记忆。";
+      : status === "active"
+        ? "当前用户还没有保存有效长期记忆。"
+        : `当前用户没有 ${status} 状态的长期记忆。`;
   }
 
   const prefix = query
-    ? `找到 ${memories.length} 条匹配“${query}”的长期记忆：`
-    : `找到 ${memories.length} 条长期记忆：`;
+    ? `找到 ${memories.length} 条匹配“${query}”的 ${status} 长期记忆：`
+    : `找到 ${memories.length} 条 ${status} 长期记忆：`;
   const memoryLines = memories.map((memory) =>
     memory.memoryId
-      ? `- ${memory.content}（${memory.category}，${memory.memoryKey}，id: ${memory.memoryId}）`
-      : `- ${memory.content}（${memory.category}，${memory.memoryKey}）`,
+      ? `- ${memory.content}（${memory.category}，${memory.memoryKey}，${memory.status}，id: ${memory.memoryId}）`
+      : `- ${memory.content}（${memory.category}，${memory.memoryKey}，${memory.status}）`,
   );
 
   return [prefix, ...memoryLines].join("\n");

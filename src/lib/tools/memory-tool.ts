@@ -6,6 +6,7 @@ import {
   saveUserMemory,
   type MemoryServiceContext,
 } from "@/lib/agent/services/memory-service";
+import { MEMORY_KEYS } from "@/lib/server/memory-store";
 
 const memoryCategorySchema = z
   .string()
@@ -18,23 +19,50 @@ export function createMemoryTools(context: MemoryServiceContext) {
   return [
     createSaveMemoryTool(context),
     tool(
-      async ({ limit = 20, query }) =>
+      async ({
+        includeHistory = false,
+        limit = 20,
+        memoryKey,
+        query,
+        status,
+      }) =>
         jsonResult(
           await queryUserMemories(context, {
+            includeHistory,
             limit,
+            memoryKey,
             query,
+            status,
           }),
         ),
       {
         name: "list_memories",
         description:
-          "List or search explicit long-term memories for the current tenant and user. Use this when the user asks what you remember or asks for a saved preference/fact.",
+          "List or search explicit long-term memories for the current tenant and user. Defaults to active memories. Use history/status filters only when the user asks for replaced, deleted, or historical memories.",
         schema: z.object({
+          includeHistory: z
+            .boolean()
+            .optional()
+            .describe(
+              "Set true only when the user asks for replaced, deleted, historical, or all memories.",
+            ),
+          memoryKey: z
+            .enum(MEMORY_KEYS)
+            .optional()
+            .describe("Optional memory key used to filter memory records."),
           query: z
             .string()
             .max(200)
             .optional()
-            .describe("Optional keyword used to filter memory content/category."),
+            .describe(
+              "Optional keyword used to filter memory content/category/key.",
+            ),
+          status: z
+            .enum(["active", "superseded", "deleted", "all"])
+            .optional()
+            .describe(
+              "Memory status filter. Defaults to active unless includeHistory is true.",
+            ),
           limit: z
             .number()
             .int()
