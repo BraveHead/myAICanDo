@@ -1,5 +1,4 @@
 import {
-  createAgent,
   createMiddleware,
   modelRetryMiddleware,
   toolRetryMiddleware,
@@ -15,11 +14,8 @@ import {
   type ApprovalPendingPayload,
 } from "@/lib/approval-actions";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
-import {
-  DEFAULT_MODEL_TIMEOUT,
-  createProjectChatModel,
-  type CreateProjectChatModelOptions,
-} from "./chat-model";
+import { DEFAULT_MODEL_TIMEOUT } from "./chat-model";
+import { createHarnessedAgent } from "../harness";
 import { createRequestLogger, logger, toLogError } from "@/lib/server/logger";
 import { createPendingAction } from "@/lib/server/pending-action-store";
 import { previewSaveMemory } from "@/lib/server/memory-store";
@@ -32,7 +28,6 @@ import type { ThreadScope } from "@/lib/server/thread-store/persistence";
 import type {
   AgentDefinition,
   AgentMessage,
-  AgentToolContext,
   CreateConfiguredAgentOptions,
 } from "./agent-definition";
 
@@ -102,16 +97,7 @@ class ToolApprovalRequiredError extends Error {
 
 export async function createConfiguredAgent(
   definition: AgentDefinition,
-  {
-    apiKey,
-    baseURL,
-    memoryContext,
-    modelName,
-    onStreamEvent,
-    runLogger,
-    threadId,
-    threadScope,
-  }: CreateConfiguredAgentOptions & {
+  options: CreateConfiguredAgentOptions & {
     memoryContext?: string;
     onStreamEvent?: (event: ChatStreamEvent) => void;
     runLogger?: Logger;
@@ -119,46 +105,12 @@ export async function createConfiguredAgent(
     threadScope?: ThreadScope;
   },
 ) {
-  const modelOptions: CreateProjectChatModelOptions = {
-    apiKey,
-    baseURL,
-    modelName,
-    temperature: definition.modelOptions?.temperature,
-    timeout: definition.modelOptions?.timeout,
-  };
-  const model = createProjectChatModel(modelOptions);
-  const agentCheckpointer = await getAgentCheckpointer();
-  const middleware = createAgentMiddleware(onStreamEvent, runLogger, {
-    agentId: definition.id,
-    threadId,
-    threadScope,
-  });
-  const tools = resolveAgentTools(definition, {
-    threadId,
-    threadScope,
-  });
-  runLogger?.debug(
-    {
-      checkpointer: getCheckpointerType(agentCheckpointer),
-      hasMemoryContext: Boolean(memoryContext),
-      hasResponseFormat: Boolean(definition.responseFormat),
-      toolCount: tools.length,
-    },
-    "agent configured",
-  );
-
-  return createAgent({
-    model,
-    tools,
-    systemPrompt: appendSystemPromptContext(
-      definition.systemPrompt,
-      memoryContext,
-    ),
-    checkpointer: agentCheckpointer,
-    ...(definition.responseFormat
-      ? { responseFormat: definition.responseFormat }
-      : {}),
-    ...(middleware.length > 0 ? { middleware } : {}),
+  return createHarnessedAgent({
+    ...options,
+    definition,
+    createMiddleware: createAgentMiddleware,
+    getCheckpointer: getAgentCheckpointer,
+    getCheckpointerType,
   });
 }
 
@@ -402,26 +354,6 @@ export async function* streamConfiguredAgentText(
   }
 }
 
-function resolveAgentTools(
-  definition: AgentDefinition,
-  context: AgentToolContext,
-) {
-  return typeof definition.tools === "function"
-    ? definition.tools(context)
-    : definition.tools;
-}
-
-function appendSystemPromptContext(
-  systemPrompt: string,
-  memoryContext: string | undefined,
-) {
-  if (!memoryContext?.trim()) {
-    return systemPrompt;
-  }
-
-  return `${systemPrompt}\n\n## 已保存的用户记忆\n\n${memoryContext}`;
-}
-
 function createToolCallStreamingMiddleware(
   onStreamEvent: (event: ChatStreamEvent) => void,
   runLogger?: Logger,
@@ -532,15 +464,19 @@ function createToolCallStreamingMiddleware(
   });
 }
 
-function createAgentMiddleware(
-  onStreamEvent?: (event: ChatStreamEvent) => void,
-  runLogger?: Logger,
-  approvalContext?: {
-    agentId: AgentDefinition["id"];
-    threadId?: string;
-    threadScope?: ThreadScope;
-  },
-): readonly AnyAgentMiddleware[] {
+function createAgentMiddleware({
+  agentId,
+  onStreamEvent,
+  runLogger,
+  threadId,
+  threadScope,
+}: {
+  agentId: AgentDefinition["id"];
+  onStreamEvent?: (event: ChatStreamEvent) => void;
+  runLogger?: Logger;
+  threadId?: string;
+  threadScope?: ThreadScope;
+}): readonly AnyAgentMiddleware[] {
   const retryMiddleware = [
     toolRetryMiddleware(AGENT_RETRY_OPTIONS),
     modelRetryMiddleware(AGENT_RETRY_OPTIONS),
@@ -551,7 +487,11 @@ function createAgentMiddleware(
   }
 
   return [
-    createToolCallStreamingMiddleware(onStreamEvent, runLogger, approvalContext),
+    createToolCallStreamingMiddleware(onStreamEvent, runLogger, {
+      agentId,
+      threadId,
+      threadScope,
+    }),
     ...retryMiddleware,
     createToolRetryStatusMiddleware(onStreamEvent, runLogger),
   ];
