@@ -988,6 +988,7 @@ function AssistantMessage() {
               },
               data: {
                 by_name: {
+                  agent_retry: AgentRetryPart,
                   structured_response: StructuredResponsePart,
                   todo_state: TodoStatePart,
                 },
@@ -1031,6 +1032,94 @@ type TodoStateData = {
   }>;
   updatedAt: string;
 };
+
+type AgentRetryData = {
+  attempt: number;
+  completedToolCallCount: number;
+  lastToolCall?: {
+    toolCallId: string;
+    toolName: string;
+  };
+  maxAttempts: number;
+  reason: string;
+  recovery: "checkpoint";
+};
+
+function AgentRetryPart({ data }: DataMessagePartProps) {
+  const retry = parseAgentRetry(data);
+  if (!retry) {
+    return null;
+  }
+
+  const toolLabel = retry.lastToolCall
+    ? `工具 ${retry.lastToolCall.toolName} 完成后`
+    : `${retry.completedToolCallCount} 个工具完成后`;
+
+  return (
+    <div className="my-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-950">
+      <div className="flex items-center gap-2 font-medium">
+        <RotateCcw size={15} />
+        <span>已从 checkpoint 重试</span>
+        <span className="text-xs font-normal text-amber-800">
+          {retry.attempt}/{retry.maxAttempts}
+        </span>
+      </div>
+      <div className="mt-1 text-[13px] leading-5 text-amber-900">
+        模型在{toolLabel}继续生成时失败，已触发 checkpoint 恢复。
+      </div>
+      <div className="mt-1 break-words rounded-lg border border-amber-200 bg-white/70 px-2 py-1 font-mono text-xs leading-5 text-amber-900">
+        {retry.reason}
+      </div>
+    </div>
+  );
+}
+
+function parseAgentRetry(data: unknown): AgentRetryData | null {
+  if (!isPlainRecord(data)) {
+    return null;
+  }
+
+  const lastToolCall = isPlainRecord(data.lastToolCall)
+    ? data.lastToolCall
+    : undefined;
+  if (
+    typeof data.attempt !== "number" ||
+    typeof data.completedToolCallCount !== "number" ||
+    typeof data.maxAttempts !== "number" ||
+    typeof data.reason !== "string" ||
+    data.recovery !== "checkpoint"
+  ) {
+    return null;
+  }
+
+  let parsedLastToolCall: AgentRetryData["lastToolCall"];
+  if (lastToolCall) {
+    if (
+      typeof lastToolCall.toolCallId !== "string" ||
+      typeof lastToolCall.toolName !== "string"
+    ) {
+      return null;
+    }
+
+    parsedLastToolCall = {
+      toolCallId: lastToolCall.toolCallId,
+      toolName: lastToolCall.toolName,
+    };
+  }
+
+  return {
+    attempt: data.attempt,
+    completedToolCallCount: data.completedToolCallCount,
+    ...(parsedLastToolCall
+      ? {
+          lastToolCall: parsedLastToolCall,
+        }
+      : {}),
+    maxAttempts: data.maxAttempts,
+    reason: data.reason,
+    recovery: "checkpoint",
+  };
+}
 
 function TodoStatePart({ data }: DataMessagePartProps) {
   const state = parseTodoState(data);

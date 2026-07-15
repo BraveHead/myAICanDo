@@ -2,8 +2,8 @@ import { tool } from "langchain";
 import * as z from "zod";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
-import { writeThreadTodoState } from "./todo-store";
-import { TODO_STATUSES, type TodoInputItem } from "./types";
+import { writeThreadTodoState } from "../planning/todo-store";
+import { TODO_STATUSES, type TodoInputItem } from "../planning/types";
 
 type PlanningToolContext = {
   agentId: string;

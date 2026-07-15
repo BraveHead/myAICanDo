@@ -4,9 +4,13 @@ export function appendPlanningPromptContext(
   systemPrompt: string,
   todoState: TodoState | null | undefined,
 ) {
-  return `${systemPrompt}
+  return `${systemPrompt}\n\n${buildPlanningPromptContext(todoState)}`;
+}
 
-## 任务计划
+export function buildPlanningPromptContext(
+  todoState: TodoState | null | undefined,
+) {
+  return `## 任务计划
 
 - 你可以使用 write_todos 维护当前线程的任务列表。
 - 对多步骤、文件分析、报告产出、跨工具执行或可能耗时的任务，先写出 todo，再执行。

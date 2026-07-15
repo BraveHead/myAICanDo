@@ -6,6 +6,10 @@ import {
   deleteFilesystemFile,
   editFilesystemFile,
   globFilesystemFiles,
+  listFilesystemDirectory,
+  readFilesystemFile,
+  searchFilesystemText,
+  writeInternalFilesystemArtifact,
   writeFilesystemFile,
 } from "../src/lib/agent/services/filesystem-service.ts";
 
@@ -84,6 +88,7 @@ describe("filesystem-service", () => {
       "other/a.txt",
       ".env",
       "workspace/.env",
+      ".context/offloads/a.json",
       "../a.txt",
       path.join(sandboxRoot, "absolute.txt"),
     ];
@@ -150,6 +155,46 @@ describe("filesystem-service", () => {
     expect(directoryDelete.error.code).toBe("not_file");
     expect(symlinkDelete.ok).toBe(false);
     expect(symlinkDelete.error.code).toBe("symlink_not_allowed");
+  });
+
+  test("internal context artifacts are hidden by default but explicitly readable", async () => {
+    const marker = "internal-offload-marker";
+    const userWrite = await writeFilesystemFile(context, {
+      content: "blocked",
+      path: ".context/offloads/a.json",
+    });
+    const internalWrite = await writeInternalFilesystemArtifact(context, {
+      content: JSON.stringify({
+        marker,
+      }),
+      path: ".context/offloads/a.json",
+    });
+
+    expect(userWrite.ok).toBe(false);
+    expect(userWrite.error.code).toBe("permission_denied");
+    expect(internalWrite.ok).toBe(true);
+
+    const rootList = await listFilesystemDirectory(context, ".");
+    expect(rootList.ok).toBe(true);
+    expect(rootList.entries.some((entry) => entry.name === ".context")).toBe(false);
+
+    const rootSearch = await searchFilesystemText(context, {
+      query: marker,
+    });
+    expect(rootSearch.ok).toBe(true);
+    expect(rootSearch.matches).toHaveLength(0);
+
+    const rootGlob = await globFilesystemFiles(context, {
+      pattern: "**/*.json",
+    });
+    expect(rootGlob.ok).toBe(true);
+    expect(rootGlob.matches.some((match) => match.path.startsWith(".context/"))).toBe(
+      false,
+    );
+
+    const explicitRead = await readFilesystemFile(context, ".context/offloads/a.json");
+    expect(explicitRead.ok).toBe(true);
+    expect(explicitRead.content).toContain(marker);
   });
 });
 

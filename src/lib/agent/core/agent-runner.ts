@@ -16,6 +16,10 @@ import {
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import { DEFAULT_MODEL_TIMEOUT } from "./chat-model";
 import { createHarnessedAgent } from "../harness";
+import {
+  offloadToolResultIfNeeded,
+  type ContextOffloadPolicy,
+} from "../harness/context";
 import { createRequestLogger, logger, toLogError } from "@/lib/server/logger";
 import { createPendingAction } from "@/lib/server/pending-action-store";
 import { previewSaveMemory } from "@/lib/server/memory-store";
@@ -41,6 +45,7 @@ import type {
 } from "./agent-definition";
 
 type StreamConfiguredAgentTextOptions = CreateConfiguredAgentOptions & {
+  contextPolicy?: ContextOffloadPolicy;
   definition: AgentDefinition;
   memoryContext?: string;
   messages: AgentMessage[];
@@ -121,6 +126,7 @@ export async function createConfiguredAgent(
     threadId?: string;
     threadScope?: ThreadScope;
     todoState?: TodoState | null;
+    contextPolicy?: ContextOffloadPolicy;
   },
 ) {
   return createHarnessedAgent({
@@ -133,6 +139,7 @@ export async function createConfiguredAgent(
 }
 
 export async function* streamConfiguredAgentEvents({
+  contextPolicy,
   definition,
   memoryContext,
   messages,
@@ -161,6 +168,7 @@ export async function* streamConfiguredAgentEvents({
       : null;
   const agent = await createConfiguredAgent(definition, {
     ...modelOptions,
+    contextPolicy,
     memoryContext,
     onStreamEvent: (event) => {
       if (event.type === "tool_call" && event.status === "complete") {
@@ -256,6 +264,36 @@ export async function* streamConfiguredAgentEvents({
     queue.close();
     return true;
   };
+  const pushAgentRetryEvent = ({
+    attempt,
+    error,
+    maxAttempts,
+  }: {
+    attempt: number;
+    error: Error;
+    maxAttempts: number;
+  }) => {
+    const lastToolCall = completedToolCalls.at(-1);
+    const event: ChatStreamEvent = {
+      attempt,
+      completedToolCallCount,
+      ...(lastToolCall
+        ? {
+            lastToolCall: {
+              toolCallId: lastToolCall.toolCallId,
+              toolName: lastToolCall.toolName,
+            },
+          }
+        : {}),
+      maxAttempts,
+      reason: formatUnknownError(error),
+      recovery: "checkpoint",
+      type: "agent_retry",
+    };
+
+    onStreamEvent?.(event);
+    queue.push(event);
+  };
 
   runLogger.info(
     {
@@ -307,19 +345,25 @@ export async function* streamConfiguredAgentEvents({
 
       // Tool results may already be checkpointed when the final model call fails;
       // one resume lets LangGraph finish from that persisted state.
+      const normalizedError = toError(error);
       if (
         agentThreadId &&
         completedToolCallCount > 0 &&
         !signal.aborted &&
-        shouldRetryAgentError(toError(error))
+        shouldRetryAgentError(normalizedError)
       ) {
         runLogger.warn(
           {
             completedToolCallCount,
-            err: toLogError(error),
+            err: toLogError(normalizedError),
           },
           "agent invoke failed after tool call; retrying from checkpoint",
         );
+        pushAgentRetryEvent({
+          attempt: 1,
+          error: normalizedError,
+          maxAttempts: 1,
+        });
         try {
           const result = await runAgent();
           const resultSummary = pushAgentResult(result);
@@ -383,6 +427,7 @@ function createToolCallStreamingMiddleware(
   runLogger?: Logger,
   approvalContext?: {
     agentId: AgentDefinition["id"];
+    contextPolicy?: ContextOffloadPolicy;
     threadId?: string;
     threadScope?: ThreadScope;
   },
@@ -450,9 +495,44 @@ function createToolCallStreamingMiddleware(
 
       try {
         const result = await handler(request);
+        const offloadedResult = await offloadToolResultIfNeeded({
+          args,
+          policy: approvalContext?.contextPolicy,
+          result,
+          threadId: approvalContext?.threadId,
+          threadScope: approvalContext?.threadScope,
+          toolCallId,
+          toolName,
+        });
+        const visibleResult = offloadedResult.offloaded
+          ? offloadedResult.result
+          : result;
+
+        if (offloadedResult.offloaded) {
+          runLogger?.info(
+            {
+              artifactPath: offloadedResult.artifactPath,
+              originalSizeBytes: offloadedResult.originalSizeBytes,
+              summary: offloadedResult.summary,
+              toolCallId,
+              toolName,
+            },
+            "agent tool result offloaded",
+          );
+        } else if (offloadedResult.reason === "write_failed") {
+          runLogger?.warn(
+            {
+              err: offloadedResult.writeError,
+              toolCallId,
+              toolName,
+            },
+            "agent tool result offload failed",
+          );
+        }
+
         runLogger?.debug(
           {
-            result: summarizeLogValue(result),
+            result: summarizeLogValue(visibleResult),
             toolCallId,
             toolName,
           },
@@ -461,12 +541,12 @@ function createToolCallStreamingMiddleware(
         onStreamEvent({
           type: "tool_call",
           args,
-          result: normalizeToolResult(result),
+          result: normalizeToolResult(visibleResult),
           status: "complete",
           toolCallId,
           toolName,
         });
-        return result;
+        return visibleResult;
       } catch (error) {
         runLogger?.error(
           {
@@ -492,12 +572,14 @@ function createToolCallStreamingMiddleware(
 
 function createAgentMiddleware({
   agentId,
+  contextPolicy,
   onStreamEvent,
   runLogger,
   threadId,
   threadScope,
 }: {
   agentId: AgentDefinition["id"];
+  contextPolicy?: ContextOffloadPolicy;
   onStreamEvent?: (event: ChatStreamEvent) => void;
   runLogger?: Logger;
   threadId?: string;
@@ -515,6 +597,7 @@ function createAgentMiddleware({
   return [
     createToolCallStreamingMiddleware(onStreamEvent, runLogger, {
       agentId,
+      contextPolicy,
       threadId,
       threadScope,
     }),
@@ -1261,6 +1344,14 @@ function createFilesystemToolSummary(
     };
   }
 
+  if (isContextOffloadReferenceContent(content)) {
+    return {
+      event,
+      isError: false,
+      summary: summarizeOffloadedToolResult(content),
+    };
+  }
+
   let summary: string | null = null;
   if (event.toolName === "list_filesystem_directory") {
     summary = summarizeDirectoryListing(content);
@@ -1315,6 +1406,14 @@ function createMemoryToolSummary(
     };
   }
 
+  if (isContextOffloadReferenceContent(content)) {
+    return {
+      event,
+      isError: false,
+      summary: summarizeOffloadedToolResult(content),
+    };
+  }
+
   let summary: string | null = null;
   if (event.toolName === "save_memory") {
     summary = summarizeSavedMemory(content);
@@ -1343,6 +1442,14 @@ function createCoordinatorToolSummary(
   const content = parseToolJsonContent(event.result);
   if (!isRecord(content) || typeof content.summary !== "string") {
     return null;
+  }
+
+  if (isContextOffloadReferenceContent(content)) {
+    return {
+      event,
+      isError: false,
+      summary: summarizeOffloadedToolResult(content),
+    };
   }
 
   const isError = content.ok === false;
@@ -1582,6 +1689,14 @@ function summarizeDeletedMemory(content: Record<string, unknown>) {
   return memoryId ? `已删除记忆 ${memoryId}。` : "已删除记忆。";
 }
 
+function summarizeOffloadedToolResult(content: {
+  artifactPath: string;
+  originalSizeBytes: number;
+  summary: string;
+}) {
+  return `${content.summary}\n原始工具结果已写入 \`${content.artifactPath}\`，大小 ${content.originalSizeBytes} bytes。`;
+}
+
 function formatDirectoryEntry(entry: unknown) {
   if (!entry || typeof entry !== "object") {
     return null;
@@ -1725,6 +1840,22 @@ function isToolErrorContent(
 
   const error = content.error as Record<string, unknown>;
   return typeof error.code === "string" && typeof error.message === "string";
+}
+
+function isContextOffloadReferenceContent(
+  content: Record<string, unknown>,
+): content is {
+  artifactPath: string;
+  offloaded: true;
+  originalSizeBytes: number;
+  summary: string;
+} {
+  return (
+    content.offloaded === true &&
+    typeof content.artifactPath === "string" &&
+    typeof content.originalSizeBytes === "number" &&
+    typeof content.summary === "string"
+  );
 }
 
 function formatFilesystemPath(value: unknown) {

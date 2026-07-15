@@ -184,6 +184,15 @@ export type DeleteFilesystemFileResult =
     }
   | FilesystemServiceErrorResult;
 
+export type WriteInternalFilesystemArtifactResult =
+  | {
+      ok: true;
+      path: string;
+      sizeBytes: number;
+      summary: string;
+    }
+  | FilesystemServiceErrorResult;
+
 export type FilesystemServiceErrorResult = {
   error: FilesystemServiceError;
   ok: false;
@@ -197,7 +206,10 @@ const MAX_SEARCH_FILE_BYTES = 128_000;
 const MAX_SEARCH_FILES = 200;
 const MAX_GLOB_DEPTH = 8;
 const MAX_GLOB_FILES = 500;
+const MAX_INTERNAL_ARTIFACT_BYTES = 512_000;
 const PREVIEW_TEXT_LIMIT = 1_000;
+const CONTEXT_DIRECTORY = ".context";
+const CONTEXT_OFFLOAD_DIRECTORY = ".context/offloads";
 const MUTABLE_ROOTS = ["workspace", "notes"] as const;
 export const FILESYSTEM_MAX_SEARCH_RESULTS = 50;
 export const FILESYSTEM_MAX_GLOB_RESULTS = 200;
@@ -232,7 +244,9 @@ export async function listFilesystemDirectory(
 
     const allNames = (await fs.readdir(
       /* turbopackIgnore: true */ resolvedPath.absolutePath,
-    )).sort((left, right) => left.localeCompare(right));
+    ))
+      .filter((name) => shouldShowDirectoryEntry(resolvedPath.relativePath, name))
+      .sort((left, right) => left.localeCompare(right));
     const names = allNames.slice(0, MAX_DIRECTORY_ENTRIES);
     const entries = await Promise.all(
       names.map(async (name) => {
@@ -371,6 +385,7 @@ export async function searchFilesystemText(
       caseSensitive,
       depth: 0,
       displayPath: resolvedPath.relativePath,
+      includeContextDirectory: isContextPath(resolvedPath.relativePath),
       maxResults: boundedMaxResults,
       query,
       state,
@@ -454,6 +469,7 @@ export async function globFilesystemFiles(
       absolutePath: resolvedPath.absolutePath,
       depth: 0,
       displayPath: resolvedPath.relativePath,
+      includeContextDirectory: isContextPath(resolvedPath.relativePath),
       matcher,
       maxResults: boundedMaxResults,
       relativeMatchPath: "",
@@ -830,11 +846,75 @@ export async function deleteFilesystemFile(
   }
 }
 
+export async function writeInternalFilesystemArtifact(
+  context: FilesystemServiceContext,
+  {
+    content,
+    path: inputPath,
+  }: {
+    content: string;
+    path: string;
+  },
+): Promise<WriteInternalFilesystemArtifactResult> {
+  const preparedPath = prepareInternalArtifactPath(context, inputPath);
+  if (!preparedPath.ok) {
+    return preparedPath;
+  }
+
+  const sizeBytes = Buffer.byteLength(content, "utf8");
+  if (sizeBytes > MAX_INTERNAL_ARTIFACT_BYTES) {
+    return createAccessError(
+      "file_too_large",
+      `Internal artifact exceeds the ${MAX_INTERNAL_ARTIFACT_BYTES} byte write limit.`,
+    );
+  }
+
+  const parentError = await validateExistingParentChain(preparedPath);
+  if (parentError) {
+    return parentError;
+  }
+
+  try {
+    await fs.mkdir(
+      /* turbopackIgnore: true */ path.dirname(preparedPath.absolutePath),
+      {
+        recursive: true,
+      },
+    );
+
+    const createdParentError = await validateExistingParentChain(preparedPath);
+    if (createdParentError) {
+      return createdParentError;
+    }
+
+    const targetError = await validateWritableTarget(preparedPath);
+    if (targetError) {
+      return targetError;
+    }
+
+    await fs.writeFile(
+      /* turbopackIgnore: true */ preparedPath.absolutePath,
+      content,
+      "utf8",
+    );
+
+    return {
+      ok: true,
+      path: preparedPath.relativePath,
+      sizeBytes,
+      summary: `已写入内部上下文 artifact \`${preparedPath.relativePath}\`，大小 ${sizeBytes} bytes。`,
+    };
+  } catch (error) {
+    return createAccessError("internal_artifact_write_failed", formatError(error));
+  }
+}
+
 async function searchSandboxPath({
   absolutePath,
   caseSensitive,
   depth,
   displayPath,
+  includeContextDirectory,
   maxResults,
   query,
   state,
@@ -843,6 +923,7 @@ async function searchSandboxPath({
   caseSensitive: boolean;
   depth: number;
   displayPath: string;
+  includeContextDirectory: boolean;
   maxResults: number;
   query: string;
   state: {
@@ -871,6 +952,7 @@ async function searchSandboxPath({
     }
 
     const names = (await fs.readdir(/* turbopackIgnore: true */ absolutePath))
+      .filter((name) => includeContextDirectory || name !== CONTEXT_DIRECTORY)
       .sort((left, right) => left.localeCompare(right));
     for (const name of names) {
       if (
@@ -888,6 +970,7 @@ async function searchSandboxPath({
         caseSensitive,
         depth: depth + 1,
         displayPath: joinRelativePath(displayPath, name),
+        includeContextDirectory,
         maxResults,
         query,
         state,
@@ -939,6 +1022,7 @@ async function globSandboxPath({
   absolutePath,
   depth,
   displayPath,
+  includeContextDirectory,
   matcher,
   maxResults,
   relativeMatchPath,
@@ -947,6 +1031,7 @@ async function globSandboxPath({
   absolutePath: string;
   depth: number;
   displayPath: string;
+  includeContextDirectory: boolean;
   matcher: (relativePath: string) => boolean;
   maxResults: number;
   relativeMatchPath: string;
@@ -976,6 +1061,7 @@ async function globSandboxPath({
     }
 
     const names = (await fs.readdir(/* turbopackIgnore: true */ absolutePath))
+      .filter((name) => includeContextDirectory || name !== CONTEXT_DIRECTORY)
       .sort((left, right) => left.localeCompare(right));
     for (const name of names) {
       if (
@@ -992,6 +1078,7 @@ async function globSandboxPath({
         ),
         depth: depth + 1,
         displayPath: joinRelativePath(displayPath, name),
+        includeContextDirectory,
         matcher,
         maxResults,
         relativeMatchPath: joinGlobPath(relativeMatchPath, name),
@@ -1065,6 +1152,35 @@ function prepareMutablePath(
   };
 }
 
+function prepareInternalArtifactPath(
+  context: FilesystemServiceContext,
+  inputPath: string,
+): PreparedMutablePath {
+  const sandboxRoot = getSandboxRoot(context);
+  if (!sandboxRoot) {
+    return createMissingContextError();
+  }
+
+  const resolvedPath = resolveSandboxPath(sandboxRoot, inputPath);
+  if (!resolvedPath.ok) {
+    return createInvalidPathError(resolvedPath.error);
+  }
+
+  const permissionError = evaluateInternalArtifactPermission(
+    resolvedPath.relativePath,
+  );
+  if (permissionError) {
+    return permissionError;
+  }
+
+  return {
+    absolutePath: resolvedPath.absolutePath,
+    ok: true,
+    relativePath: resolvedPath.relativePath,
+    sandboxRoot,
+  };
+}
+
 function evaluateMutationPermission(relativePath: string) {
   const segments = relativePath === "." ? [] : relativePath.split("/");
   if (
@@ -1081,6 +1197,24 @@ function evaluateMutationPermission(relativePath: string) {
     return createAccessError(
       "permission_denied",
       ".env files are not writable through filesystem tools.",
+    );
+  }
+
+  return null;
+}
+
+function evaluateInternalArtifactPermission(relativePath: string) {
+  const segments = relativePath.split("/");
+  const fileName = segments.at(-1) ?? "";
+  if (
+    segments.length !== 3 ||
+    `${segments[0]}/${segments[1]}` !== CONTEXT_OFFLOAD_DIRECTORY ||
+    !fileName.endsWith(".json") ||
+    fileName === ".json"
+  ) {
+    return createAccessError(
+      "permission_denied",
+      "Internal artifacts are only allowed under .context/offloads/*.json.",
     );
   }
 
@@ -1396,6 +1530,17 @@ function isEnvPathSegment(segment: string) {
 
 function joinGlobPath(parentPath: string, name: string) {
   return parentPath ? `${parentPath}/${name}` : name;
+}
+
+function shouldShowDirectoryEntry(parentPath: string, name: string) {
+  return !(parentPath === "." && name === CONTEXT_DIRECTORY);
+}
+
+function isContextPath(relativePath: string) {
+  return (
+    relativePath === CONTEXT_DIRECTORY ||
+    relativePath.startsWith(`${CONTEXT_DIRECTORY}/`)
+  );
 }
 
 function getSandboxRoot(context: FilesystemServiceContext) {

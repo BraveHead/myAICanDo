@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>myAICanDo Deep Agent Harness 迭代计划</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --panel-3: #242936;
+    --border: #303745;
+    --text: #d9dde5;
+    --muted: #9aa3b2;
+    --strong: #f4f6fa;
+    --accent: #7cb7ff;
+    --accent-2: #81d99c;
+    --warn: #f0b56b;
+    --danger: #ff9aa8;
+    --code: #f2c27b;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+  }
+
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  .layout {
+    display: flex;
+    max-width: 1320px;
+    margin: 0 auto;
+  }
+
+  .toc {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    width: 270px;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 28px 18px;
+    border-right: 1px solid var(--border);
+  }
+
+  .toc h2 {
+    margin: 0 0 14px;
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  .toc a {
+    display: block;
+    margin: 0 0 3px;
+    padding: 6px 10px;
+    border-radius: 7px;
+    color: var(--muted);
+    font-size: 13.5px;
+  }
+
+  .toc a:hover {
+    background: var(--panel-2);
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  main {
+    flex: 1;
+    min-width: 0;
+    padding: 42px 48px 110px;
+  }
+
+  header.hero {
+    margin-bottom: 34px;
+  }
+
+  header.hero h1 {
+    margin: 0 0 12px;
+    color: var(--strong);
+    font-size: 30px;
+    line-height: 1.25;
+  }
+
+  header.hero .summary {
+    max-width: 920px;
+    color: var(--muted);
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 18px;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 3px 11px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+
+  h2.section {
+    margin: 48px 0 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--strong);
+    font-size: 21px;
+    scroll-margin-top: 24px;
+  }
+
+  h2.section .num {
+    margin-right: 8px;
+    color: var(--accent);
+  }
+
+  h3 {
+    margin: 28px 0 12px;
+    color: var(--strong);
+    font-size: 16px;
+  }
+
+  p {
+    margin: 10px 0;
+  }
+
+  ul,
+  ol {
+    margin: 10px 0 10px 22px;
+    padding: 0;
+  }
+
+  li {
+    margin: 5px 0;
+  }
+
+  code {
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--panel-2);
+    color: var(--code);
+    font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+  }
+
+  .callout {
+    margin: 18px 0;
+    padding: 14px 18px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    background: var(--panel);
+  }
+
+  .callout strong {
+    color: var(--strong);
+  }
+
+  .callout.warn {
+    border-left-color: var(--warn);
+  }
+
+  .grid {
+    display: grid;
+    gap: 14px;
+  }
+
+  .grid.cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .grid.cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .card {
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+  }
+
+  .card h3 {
+    margin-top: 0;
+  }
+
+  .card .label {
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+
+  table {
+    width: 100%;
+    margin: 16px 0;
+    border-collapse: collapse;
+    font-size: 13.5px;
+  }
+
+  th,
+  td {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  th {
+    background: var(--panel-2);
+    color: var(--strong);
+    font-weight: 600;
+  }
+
+  tr:nth-child(even) td {
+    background: rgba(255, 255, 255, 0.018);
+  }
+
+  .status {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .status.done {
+    color: var(--accent-2);
+    border-color: rgba(129, 217, 156, .4);
+  }
+
+  .status.partial {
+    color: var(--warn);
+    border-color: rgba(240, 181, 107, .45);
+  }
+
+  .status.todo {
+    color: var(--muted);
+  }
+
+  .roadmap {
+    display: grid;
+    gap: 14px;
+  }
+
+  .milestone {
+    display: grid;
+    grid-template-columns: 86px minmax(0, 1fr);
+    gap: 16px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+  }
+
+  .milestone .tag {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 68px;
+    height: 68px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(124, 183, 255, .18), rgba(129, 217, 156, .12));
+    border: 1px solid var(--border);
+    color: var(--strong);
+    font-weight: 700;
+    letter-spacing: .04em;
+  }
+
+  .milestone h3 {
+    margin: 0 0 8px;
+    font-size: 17px;
+  }
+
+  .milestone .why {
+    color: var(--muted);
+  }
+
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .step-box {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+  }
+
+  .step-box strong {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--strong);
+    font-weight: 600;
+  }
+
+  .arch {
+    display: grid;
+    gap: 10px;
+    margin: 18px 0;
+  }
+
+  .arch-row {
+    display: grid;
+    grid-template-columns: minmax(150px, .25fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  .arch-name,
+  .arch-detail {
+    padding: 13px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+  }
+
+  .arch-name {
+    color: var(--strong);
+    font-weight: 600;
+  }
+
+  .arch-detail {
+    color: var(--muted);
+  }
+
+  .arrow {
+    display: flex;
+    justify-content: center;
+    color: var(--muted);
+  }
+
+  .source-list {
+    color: var(--muted);
+  }
+
+  footer {
+    margin-top: 62px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  @media (max-width: 980px) {
+    .toc {
+      display: none;
+    }
+
+    main {
+      padding: 30px 20px 80px;
+    }
+
+    .grid.cols-2,
+    .grid.cols-3,
+    .steps {
+      grid-template-columns: 1fr;
+    }
+
+    .milestone,
+    .arch-row {
+      grid-template-columns: 1fr;
+    }
+
+    .milestone .tag {
+      width: auto;
+      height: auto;
+      padding: 8px 12px;
+      justify-content: flex-start;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="toc">
+    <h2>目录</h2>
+    <a href="#goal">目标</a>
+    <a href="#baseline">当前项目基线</a>
+    <a href="#target">目标 harness 架构</a>
+    <a href="#roadmap">迭代路线</a>
+    <a href="#first">第一步建议</a>
+    <a href="#acceptance">总体验收</a>
+    <a href="#sources">参考资料</a>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <h1>myAICanDo Deep Agent Harness 迭代计划</h1>
+      <div class="summary">
+        目标不是把项目整体迁移到 Python 版 Deep Agents，而是在当前 Next.js + LangChain + LangGraph checkpoint 的 TypeScript 架构上，逐步补齐 Deep Agents 中最基础的 agent harness 能力：文件系统、计划、上下文管理、子代理、长期记忆、人工确认和可观测流。
+      </div>
+      <div class="meta">
+        <span class="pill">生成日期：2026-07-14</span>
+        <span class="pill">最近更新：2026-07-15</span>
+        <span class="pill">项目：myAICanDo</span>
+        <span class="pill">技术基线：LangChain createAgent + LangGraph checkpointer</span>
+        <span class="pill">推荐首个功能：filesystem v1.1</span>
+      </div>
+    </header>
+
+    <section id="goal">
+      <h2 class="section"><span class="num">§1</span>目标</h2>
+      <div class="callout">
+        <strong>一句话目标：</strong>
+        在现有 agent runner 上抽出一个本地 <code>AgentHarness</code> 层，让普通 LangChain agent 获得 Deep Agents 风格的基础脚手架能力，而不破坏当前 tenant/user/thread 隔离、assistant-ui 线程存储、LangGraph checkpoint 和已有 memory approval 流程。
+      </div>
+
+      <div class="grid cols-3">
+        <div class="card">
+          <h3>保持现有架构</h3>
+          <p>继续使用 <code>langchain</code> 的 <code>createAgent</code>、当前模型配置、现有 <code>/api/tenants/[tenantId]/chat</code> 路由和 thread-store。</p>
+        </div>
+        <div class="card">
+          <h3>补齐 harness 能力</h3>
+          <p>按功能增量添加 <code>filesystem</code>、<code>write_todos</code>、<code>task</code>、context offloading、skills、memory、human-in-the-loop。</p>
+        </div>
+        <div class="card">
+          <h3>避免一次性重写</h3>
+          <p>每一步都能独立上线、独立验证。先做可见能力，再做抽象收敛和体验增强。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="baseline">
+      <h2 class="section"><span class="num">§2</span>当前项目基线</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>能力</th>
+            <th>当前状态</th>
+            <th>主要代码位置</th>
+            <th>判断</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Agent 构建</td>
+            <td>使用 <code>langchain/createAgent</code>，统一从 <code>AgentDefinition</code> 创建 agent。</td>
+            <td><code>src/lib/agent/core/agent-runner.ts</code><br><code>src/lib/agent/core/agent-definition.ts</code></td>
+            <td><span class="status done">已有</span></td>
+          </tr>
+          <tr>
+            <td>LangGraph checkpoint</td>
+            <td>有 <code>MemorySaver</code> 和 <code>PostgresSaver</code>，thread_id 按 agent/tenant/user/thread 拼接。</td>
+            <td><code>src/lib/agent/core/agent-runner.ts</code></td>
+            <td><span class="status done">已有</span></td>
+          </tr>
+          <tr>
+            <td>Virtual filesystem</td>
+            <td>按 tenant/user/thread 隔离，只支持 <code>list/read/search</code>，路径安全做得比较明确。</td>
+            <td><code>src/lib/agent/definitions/filesystem.ts</code><br><code>src/lib/agent/services/filesystem-service.ts</code><br><code>src/lib/tools/filesystem-tool.ts</code></td>
+            <td><span class="status partial">简易版</span></td>
+          </tr>
+          <tr>
+            <td>Coordinator</td>
+            <td>能通过委派工具访问 memory/filesystem/weather，但还不是子 agent runner。</td>
+            <td><code>src/lib/agent/definitions/coordinator.ts</code><br><code>src/lib/tools/coordinator-tool.ts</code></td>
+            <td><span class="status partial">雏形</span></td>
+          </tr>
+          <tr>
+            <td>Long-term memory</td>
+            <td>有自建 <code>memory-store</code> 和 <code>save/list/delete</code> 工具，写入/删除有确认。</td>
+            <td><code>src/lib/agent/services/memory-service.ts</code><br><code>src/lib/server/memory-store.ts</code><br><code>src/lib/tools/memory-tool.ts</code></td>
+            <td><span class="status partial">业务自建</span></td>
+          </tr>
+          <tr>
+            <td>Human-in-the-loop</td>
+            <td>当前只覆盖 <code>save_memory/delete_memory</code>，还不是通用 interrupt/approval 策略。</td>
+            <td><code>src/lib/approval-actions.ts</code><br><code>src/lib/agent/core/agent-runner.ts</code></td>
+            <td><span class="status partial">局部实现</span></td>
+          </tr>
+          <tr>
+            <td>Planning / todos</td>
+            <td>已有结构化 todo state、<code>write_todos</code> 工具和 <code>todo_update</code> SSE 事件。</td>
+            <td><code>src/lib/agent/harness/planning/</code><br><code>src/lib/agent/harness/tools/</code><br><code>src/lib/chat-stream.ts</code></td>
+            <td><span class="status done">已有</span></td>
+          </tr>
+          <tr>
+            <td>Skills</td>
+            <td>没有 <code>SKILL.md</code> 风格的按需加载机制。</td>
+            <td>待新增</td>
+            <td><span class="status todo">未开始</span></td>
+          </tr>
+          <tr>
+            <td>Context compression/offloading</td>
+            <td>M3 开始系统化：系统 prompt 分层，长工具结果写入线程 sandbox 的内部 artifact。</td>
+            <td><code>src/lib/agent/harness/context/</code><br><code>src/lib/agent/core/agent-runner.ts</code></td>
+            <td><span class="status partial">M3</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="target">
+      <h2 class="section"><span class="num">§3</span>目标 Harness 架构</h2>
+      <p>建议新增本地 harness 层，而不是把能力继续散落在各个 agent definition 里。这个层只负责“Deep Agent 风格脚手架”，具体业务 agent 仍由 <code>AgentDefinition</code> 描述。</p>
+
+      <div class="arch">
+        <div class="arch-row">
+          <div class="arch-name">UI / API 层</div>
+          <div class="arch-detail"><code>chat-workspace.tsx</code>、<code>/api/tenants/[tenantId]/chat</code>、SSE 事件、approval 操作。</div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="arch-row">
+          <div class="arch-name">AgentHarness 层</div>
+          <div class="arch-detail">组装内置工具、计划状态、filesystem、skills、memory、subagents、权限、context 策略和事件投影。</div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="arch-row">
+          <div class="arch-name">LangChain Agent 层</div>
+          <div class="arch-detail"><code>createAgent</code>、model、tools、system prompt、middleware、responseFormat。</div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="arch-row">
+          <div class="arch-name">LangGraph Runtime</div>
+          <div class="arch-detail">checkpoint、thread_id、恢复、持久化执行、部分 human-in-the-loop 基础能力。</div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="arch-row">
+          <div class="arch-name">项目存储</div>
+          <div class="arch-detail">Postgres thread-store、memory-store、pending-action-store、filesystem sandbox。</div>
+        </div>
+      </div>
+
+      <h3>建议新增目录</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>目录</th>
+            <th>职责</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>src/lib/agent/harness/</code></td>
+            <td>harness 类型、配置合并、内置能力注册、运行上下文、事件投影。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/agent/harness/filesystem/</code></td>
+            <td>把当前 filesystem service 升级为可配置 backend + permissions + write/edit/delete。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/agent/harness/planning/</code></td>
+            <td>todo state、planning prompt、checkpoint 恢复、UI 事件。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/agent/harness/tools/</code></td>
+            <td>AgentHarness 内建工具，例如 <code>write_todos</code>。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/agent/harness/subagents/</code></td>
+            <td><code>task</code> 工具、子 agent 定义、隔离 thread_id、结果压缩。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/agent/harness/context/</code></td>
+            <td>系统 prompt 拼装、memory/skills 注入、工具结果 offloading、摘要策略。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/agent/harness/skills/</code></td>
+            <td>扫描 <code>skills/*/SKILL.md</code>，先加载 frontmatter，再按需读取全文。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="roadmap">
+      <h2 class="section"><span class="num">§4</span>迭代路线</h2>
+
+      <div class="roadmap">
+        <article class="milestone">
+          <div class="tag">M0</div>
+          <div>
+            <h3>抽出 AgentHarness 外壳</h3>
+            <p class="why">这是技术铺垫，不做复杂功能。目的是让后续内置工具、prompt 拼装、事件投影、权限策略有统一入口。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                新增 <code>AgentHarnessConfig</code>、<code>createHarnessedAgent()</code>，内部仍调用当前 <code>createAgent()</code>。
+              </div>
+              <div class="step-box">
+                <strong>范围</strong>
+                只迁移 <code>checkpointer</code>、<code>middleware</code>、<code>systemPrompt</code> 拼装入口，不改业务行为。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                现有 demo/weather/literary/filesystem/memory/coordinator 全部保持可运行；<code>typecheck</code> 和 <code>lint</code> 通过。
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M1</div>
+          <div>
+            <h3>Filesystem v1.1：从只读沙盒升级为基础文件工作区</h3>
+            <p class="why">这是推荐第一个功能。当前已有只读 sandbox，路径安全和租户隔离都在，最容易变成真正 Deep Agents 风格的 virtual filesystem。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                增加 <code>write_file</code>、<code>edit_file</code>、<code>delete_file</code>、<code>glob_files</code>；保留当前 <code>list/read/search</code>。
+              </div>
+              <div class="step-box">
+                <strong>安全</strong>
+                引入 declarative permissions：默认只允许 <code>workspace/**</code> 和 <code>notes/**</code> 写入，禁止 <code>.env</code>、绝对路径和 <code>..</code>。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                文件可创建、读取、精确替换、删除；危险路径返回明确错误；写/删操作先走 approval。
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M2</div>
+          <div>
+            <h3>Planning v1：实现 <code>write_todos</code> 和任务状态（已落地）</h3>
+            <p class="why">Deep Agents 的计划层本质是让 agent 对多步任务有稳定状态，而不是只靠 prompt 说“先计划”。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                已新增 <code>write_todos</code> 工具，todo 支持 <code>pending/in_progress/completed</code>，按 tenant/user/thread 保存到项目表或内存 fallback。
+              </div>
+              <div class="step-box">
+                <strong>UI</strong>
+                已扩展 <code>ChatStreamEvent</code>，输出 <code>todo_update</code>，前端可展示紧凑任务列表。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                对“分析文件并产出报告”这类任务，agent 会先写 todos，执行中更新状态，最终全部完成或解释阻塞。
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M3</div>
+          <div>
+            <h3>Context v1：系统 prompt 分层与工具结果 offloading</h3>
+            <p class="why">当前 memoryContext 是直接拼到 system prompt；长工具结果也容易污染主上下文。这里开始建立真正的 context management。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                把 prompt 拆成 <code>base</code>、<code>agent</code>、<code>memory</code>、<code>skills</code>、<code>tool-guidance</code> 五段。
+              </div>
+              <div class="step-box">
+                <strong>Offloading</strong>
+                大文件读取、大搜索结果写入 <code>.context/offloads/*.json</code> artifact，主上下文只保留摘要和文件引用。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                同一任务读取大文件时不会把全部内容塞回最终主消息；日志能看到 offload 文件路径和摘要。
+              </div>
+            </div>
+            <div class="callout">
+              <strong>M3 最终设计：</strong>
+              prompt 固定拆成 <code>base</code>、<code>agent</code>、<code>memory</code>、<code>skills</code>、<code>tool-guidance</code> 五段；
+              默认当 JSON 工具结果超过 <code>12000</code> bytes，或 <code>read_filesystem_file.content</code> 超过 <code>8000</code> 字符时 offload。
+              artifact 保存原始结果、摘要、工具名、参数和大小；返回给模型与 SSE 的工具结果只保留 <code>summary</code>、<code>offloaded</code>、<code>artifactPath</code>、<code>originalSizeBytes</code>。
+              工具完成后的 checkpoint 恢复重试会额外发送 <code>agent_retry</code> SSE，向页面说明重试原因，但不把已成功的工具卡标记为失败。
+              <code>.context</code> 是 harness 内部目录，普通文件写入工具仍只能修改 <code>workspace/**</code> 和 <code>notes/**</code>，approval 流程不变。
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M4</div>
+          <div>
+            <h3>Subagents v1：把 coordinator 委派升级为真正 <code>task</code> 工具</h3>
+            <p class="why">当前 coordinator 只是调用委派工具，并没有启动隔离的子 agent。Deep Agents 的 subagent 重点是上下文隔离和单次结果回传。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                新增 <code>task</code> 工具，可选择 <code>filesystem</code>、<code>memory</code>、<code>weather</code> 等子 agent。
+              </div>
+              <div class="step-box">
+                <strong>隔离</strong>
+                子 agent 使用独立 <code>thread_id</code>：<code>parentThread:subtaskId:agentId</code>，只返回 final report。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                coordinator 能把“查记忆 + 搜文件 + 总结”拆给不同子 agent，主上下文只收到每个子任务的最终摘要。
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M5</div>
+          <div>
+            <h3>Skills v1：按需加载领域能力</h3>
+            <p class="why">Skills 用于把稳定工作流、项目约定和工具使用规则做成可复用能力，避免每个 agent prompt 越写越长。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                约定 <code>agent-skills/*/SKILL.md</code>，启动时只读取 frontmatter 和 description。
+              </div>
+              <div class="step-box">
+                <strong>工具</strong>
+                新增 <code>list_skills</code> 和 <code>read_skill</code>，需要时再读取全文、模板或脚本路径。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                新增一个 filesystem 报告 skill 后，agent 能在相关任务中主动读取并按该流程执行。
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M6</div>
+          <div>
+            <h3>Memory v2：统一用户记忆、项目记忆和 harness memory</h3>
+            <p class="why">当前长期记忆是业务自建，能用但和 filesystem/context/skills 还没有统一。这里把它接入 harness 层。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                将 <code>memory-store</code> 继续作为事实存储，增加 <code>memory_manifest</code> 注入和 AGENTS.md 风格项目记忆读取。
+              </div>
+              <div class="step-box">
+                <strong>边界</strong>
+                用户偏好仍按 tenant/user 隔离；项目规则按 assistant 或 workspace 隔离；两者在 prompt 中分段。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                agent 能区分用户偏好、项目规则、当前线程临时上下文；保存/删除仍需 approval。
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M7</div>
+          <div>
+            <h3>Human-in-the-loop v2：统一敏感工具审批</h3>
+            <p class="why">Deep Agents 中 HITL 覆盖敏感工具调用。当前项目只覆盖 memory mutation，应扩展到文件写入、删除、外部 API 和子任务执行。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                把 <code>APPROVAL_GATED_TOOL_NAMES</code> 从静态数组升级为 tool policy registry。
+              </div>
+              <div class="step-box">
+                <strong>决策</strong>
+                支持 <code>approve</code>、<code>reject</code>、<code>edit args</code>、<code>respond with guidance</code> 的最小版本。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                <code>write_file/delete_file/save_memory/delete_memory</code> 都会产生可审查预览；拒绝后 agent 能继续解释替代方案。
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M8</div>
+          <div>
+            <h3>Streaming v2：投影 todos、subagents、filesystem 操作</h3>
+            <p class="why">当 harness 能力变多后，只看最终答案不够。需要把用户关心的状态以结构化事件投影到前端。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                扩展 <code>ChatStreamEvent</code>：<code>todo_update</code>、<code>subagent_start/end</code>、<code>filesystem_change</code>。
+              </div>
+              <div class="step-box">
+                <strong>UI</strong>
+                在聊天区展示任务列表、子任务轨迹、文件变更摘要，不展示大段内部日志。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                长任务中用户能看到当前正在执行哪一步、哪个子 agent 在工作、改了哪些文件。
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M9</div>
+          <div>
+            <h3>Sandbox / Execute：最后再做代码执行能力</h3>
+            <p class="why">shell/code execution 风险最高，应该在 filesystem permissions、approval、event streaming 都稳定后再接。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>改动</strong>
+                先设计 <code>execute_command</code> 协议，不直接开放本机 shell；优先接隔离容器或受限 runtime。
+              </div>
+              <div class="step-box">
+                <strong>安全</strong>
+                命令 allowlist、超时、输出截断、网络策略、密钥隔离、approval 必须先完成。
+              </div>
+              <div class="step-box">
+                <strong>验收</strong>
+                能跑安全的只读命令和测试命令；危险命令被拦截；所有执行记录可审计。
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="first">
+      <h2 class="section"><span class="num">§5</span>第一步建议</h2>
+      <div class="callout warn">
+        <strong>建议从 M1：Filesystem v1.1 开始。</strong>
+        M0 是必要的轻量抽象，但第一个可交付功能应是 filesystem。原因是当前项目已经有 <code>filesystemAgentDefinition</code>、sandbox root、路径校验、list/read/search 工具和 coordinator 委派入口，扩展成本最低，且能马上为后续 planning、skills、context offloading 和 subagents 提供工作区。
+      </div>
+
+      <h3>M1 的拆分顺序</h3>
+      <ol>
+        <li>先补 <code>glob_files</code>，因为它是只读能力，风险低，能验证工具命名、schema、fallback summary 和 UI 展示链路。</li>
+        <li>再补 <code>write_file</code>，只允许创建或覆盖 <code>workspace/**</code>、<code>notes/**</code> 下的 UTF-8 文本文件。</li>
+        <li>再补 <code>edit_file</code>，只支持 exact string replacement，必须返回 before/after preview。</li>
+        <li>最后补 <code>delete_file</code>，默认必须 approval，且先只允许删除文件，不允许递归删目录。</li>
+        <li>把 filesystem 写入和删除接入统一 approval，先复用当前 memory approval UI，不急着做复杂 decision 类型。</li>
+      </ol>
+
+      <h3>M1 建议改动文件</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>文件</th>
+            <th>改动</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>src/lib/agent/services/filesystem-service.ts</code></td>
+            <td>增加 glob/write/edit/delete 服务函数；抽出 permission evaluator；保留现有路径安全函数。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/tools/filesystem-tool.ts</code></td>
+            <td>注册新工具，schema 中明确相对路径、最大大小、替换次数等约束。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/agent/definitions/filesystem.ts</code></td>
+            <td>更新 system prompt，让 agent 知道只在用户明确要求时写文件，危险操作需要确认。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/approval-actions.ts</code></td>
+            <td>把 <code>write_file/edit_file/delete_file</code> 加入 approval gate，或先抽成 registry。</td>
+          </tr>
+          <tr>
+            <td><code>src/lib/agent/core/agent-runner.ts</code></td>
+            <td>扩展 approval preview 和 filesystem fallback summary。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="acceptance">
+      <h2 class="section"><span class="num">§6</span>总体验收标准</h2>
+      <div class="grid cols-2">
+        <div class="card">
+          <h3>能力验收</h3>
+          <ul>
+            <li>agent 能维护 todo，并在长任务中更新任务状态。</li>
+            <li>agent 能在隔离 sandbox 中读写工作文件，且权限明确。</li>
+            <li>coordinator 能启动隔离子 agent，并只接收最终摘要。</li>
+            <li>大文件和大结果不会直接塞满主上下文。</li>
+            <li>敏感操作必须暂停等待用户确认。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>工程验收</h3>
+          <ul>
+            <li><code>fnm exec --using .node-version bun run typecheck</code> 通过。</li>
+            <li><code>fnm exec --using .node-version bun run lint</code> 通过。</li>
+            <li>新增 service/tool 的路径逃逸、权限、空输入、超限输入都有测试。</li>
+            <li>Postgres checkpointer 和 thread-store 的隔离 key 不变。</li>
+            <li>现有 demo/weather/literary/memory/filesystem/coordinator 行为不回退。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <h2 class="section"><span class="num">§7</span>参考资料</h2>
+      <ul class="source-list">
+        <li><a href="https://docs.langchain.com/oss/python/concepts/products">LangChain: Frameworks, runtimes, and harnesses</a></li>
+        <li><a href="https://docs.langchain.com/oss/python/deepagents/overview">LangChain: Deep Agents overview</a></li>
+        <li><a href="https://docs.langchain.com/oss/python/deepagents/context-engineering">LangChain: Context engineering in Deep Agents</a></li>
+        <li><a href="https://docs.langchain.com/oss/python/deepagents/subagents">LangChain: Subagents</a></li>
+        <li><a href="https://docs.langchain.com/oss/python/deepagents/human-in-the-loop">LangChain: Human-in-the-loop</a></li>
+      </ul>
+    </section>
+
+    <footer>
+      这份计划按当前项目代码结构制定：优先复用现有 LangChain agent runner、LangGraph checkpointer、thread-store、memory-store 和 filesystem sandbox，不引入一次性大迁移。
+    </footer>
+  </main>
+</div>
+</body>
+</html>

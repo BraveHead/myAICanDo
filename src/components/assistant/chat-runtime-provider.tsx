@@ -446,9 +446,30 @@ function parseChatSseEvent(frame: string): ChatStreamEvent | null {
 function createAssistantContentBuilder() {
   let structuredResponsePart: ThreadAssistantMessagePart | null = null;
   let todoStatePart: ThreadAssistantMessagePart | null = null;
+  const agentRetryParts = new Map<string, ThreadAssistantMessagePart>();
   const toolParts = new Map<string, ToolCallMessagePart>();
+  const timelineParts: Array<
+    | { id: string; kind: "agent_retry" }
+    | { id: string; kind: "tool_call" }
+  > = [];
   let requiresAction = false;
   let text = "";
+
+  function ensureTimelinePart(
+    part:
+      | { id: string; kind: "agent_retry" }
+      | { id: string; kind: "tool_call" },
+  ) {
+    if (
+      timelineParts.some(
+        (entry) => entry.kind === part.kind && entry.id === part.id,
+      )
+    ) {
+      return;
+    }
+
+    timelineParts.push(part);
+  }
 
   return {
     apply(event: ChatStreamEvent) {
@@ -458,6 +479,7 @@ function createAssistantContentBuilder() {
         if (event.status === "requires_action") {
           requiresAction = true;
         }
+        ensureTimelinePart({ id: event.toolCallId, kind: "tool_call" });
         toolParts.set(event.toolCallId, toToolCallPart(event));
       } else if (event.type === "structured_response") {
         structuredResponsePart = {
@@ -465,7 +487,22 @@ function createAssistantContentBuilder() {
           name: "structured_response",
           data: event.response,
         };
-      } else {
+      } else if (event.type === "agent_retry") {
+        const retryPartId = `agent_retry:${event.attempt}`;
+        ensureTimelinePart({ id: retryPartId, kind: "agent_retry" });
+        agentRetryParts.set(retryPartId, {
+          type: "data",
+          name: "agent_retry",
+          data: {
+            attempt: event.attempt,
+            completedToolCallCount: event.completedToolCallCount,
+            lastToolCall: event.lastToolCall,
+            maxAttempts: event.maxAttempts,
+            reason: event.reason,
+            recovery: event.recovery,
+          },
+        });
+      } else if (event.type === "todo_update") {
         todoStatePart = {
           type: "data",
           name: "todo_state",
@@ -478,8 +515,17 @@ function createAssistantContentBuilder() {
         };
       }
 
+      const timelineContent = timelineParts.flatMap((part) => {
+        if (part.kind === "tool_call") {
+          const toolPart = toolParts.get(part.id);
+          return toolPart ? [toolPart] : [];
+        }
+
+        const agentRetryPart = agentRetryParts.get(part.id);
+        return agentRetryPart ? [agentRetryPart] : [];
+      });
       const content = [
-        ...toolParts.values(),
+        ...timelineContent,
         ...(todoStatePart ? [todoStatePart] : []),
         ...(text
           ? ([{ type: "text", text }] satisfies ThreadAssistantMessagePart[])

@@ -3,11 +3,9 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import type { Logger } from "pino";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
-import {
-  appendPlanningPromptContext,
-  createPlanningTools,
-  type TodoState,
-} from "./planning";
+import { buildHarnessSystemPrompt, type ContextOffloadPolicy } from "./context";
+import type { TodoState } from "./planning";
+import { createPlanningTools } from "./tools";
 import type {
   AgentDefinition,
   AgentToolContext,
@@ -20,6 +18,7 @@ import {
 
 export type AgentHarnessMiddlewareFactoryOptions = {
   agentId: AgentDefinition["id"];
+  contextPolicy?: ContextOffloadPolicy;
   onStreamEvent?: (event: ChatStreamEvent) => void;
   runLogger?: Logger;
   threadId?: string;
@@ -34,6 +33,7 @@ export type AgentHarnessConfig<
   TCheckpointer extends
     BaseCheckpointSaver | boolean = BaseCheckpointSaver | boolean,
 > = CreateConfiguredAgentOptions & {
+  contextPolicy?: ContextOffloadPolicy;
   createMiddleware: AgentHarnessMiddlewareFactory;
   definition: AgentDefinition;
   getCheckpointer: () => Promise<TCheckpointer>;
@@ -51,6 +51,7 @@ export async function createHarnessedAgent<
 >({
   apiKey,
   baseURL,
+  contextPolicy,
   createMiddleware,
   definition,
   getCheckpointer,
@@ -74,6 +75,7 @@ export async function createHarnessedAgent<
   const agentCheckpointer = await getCheckpointer();
   const middleware = createMiddleware({
     agentId: definition.id,
+    contextPolicy,
     onStreamEvent,
     runLogger,
     threadId,
@@ -95,9 +97,10 @@ export async function createHarnessedAgent<
   runLogger?.debug(
     {
       checkpointer: getCheckpointerType(agentCheckpointer),
+      hasContextPolicy: Boolean(contextPolicy),
       hasMemoryContext: Boolean(memoryContext),
-      hasTodoState: Boolean(todoState?.todos.length),
       hasResponseFormat: Boolean(definition.responseFormat),
+      hasTodoState: Boolean(todoState?.todos.length),
       toolCount: tools.length,
     },
     "agent configured",
@@ -106,10 +109,12 @@ export async function createHarnessedAgent<
   return createAgent({
     model,
     tools,
-    systemPrompt: appendSystemPromptContext(
-      appendPlanningPromptContext(definition.systemPrompt, todoState),
+    systemPrompt: buildHarnessSystemPrompt({
+      agentPrompt: definition.systemPrompt,
       memoryContext,
-    ),
+      offloadPolicy: contextPolicy,
+      todoState,
+    }),
     checkpointer: agentCheckpointer,
     ...(definition.responseFormat
       ? { responseFormat: definition.responseFormat }
@@ -125,15 +130,4 @@ function resolveAgentTools(
   return typeof definition.tools === "function"
     ? definition.tools(context)
     : definition.tools;
-}
-
-function appendSystemPromptContext(
-  systemPrompt: string,
-  memoryContext: string | undefined,
-) {
-  if (!memoryContext?.trim()) {
-    return systemPrompt;
-  }
-
-  return `${systemPrompt}\n\n## 已保存的用户记忆\n\n${memoryContext}`;
 }

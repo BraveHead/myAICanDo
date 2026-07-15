@@ -41,6 +41,18 @@ export type ChatStreamEvent =
       response: unknown;
       type: "structured_response";
     }
+  | {
+      attempt: number;
+      completedToolCallCount: number;
+      lastToolCall?: {
+        toolCallId: string;
+        toolName: string;
+      };
+      maxAttempts: number;
+      reason: string;
+      recovery: "checkpoint";
+      type: "agent_retry";
+    }
   | ({
       type: "todo_update";
     } & TodoState);
@@ -49,6 +61,7 @@ const CHAT_STREAM_EVENT_TYPES = new Set<ChatStreamEvent["type"]>([
   "text_delta",
   "tool_call",
   "structured_response",
+  "agent_retry",
   "todo_update",
 ]);
 
@@ -83,6 +96,10 @@ export function isChatStreamEvent(
 
   if (candidate.type === "todo_update") {
     return isTodoUpdateEvent(candidate);
+  }
+
+  if (candidate.type === "agent_retry") {
+    return isAgentRetryEvent(candidate);
   }
 
   return true;
@@ -124,5 +141,25 @@ function isTodoUpdateEvent(value: Partial<ChatStreamEvent>) {
     typeof candidate.revision === "number" &&
     Array.isArray(candidate.todos) &&
     typeof candidate.updatedAt === "string"
+  );
+}
+
+function isAgentRetryEvent(value: Partial<ChatStreamEvent>) {
+  const candidate = value as Partial<Extract<ChatStreamEvent, { type: "agent_retry" }>>;
+  const lastToolCall = candidate.lastToolCall;
+  const hasValidLastToolCall =
+    lastToolCall === undefined ||
+    (typeof lastToolCall === "object" &&
+      !Array.isArray(lastToolCall) &&
+      typeof lastToolCall.toolCallId === "string" &&
+      typeof lastToolCall.toolName === "string");
+
+  return (
+    typeof candidate.attempt === "number" &&
+    typeof candidate.completedToolCallCount === "number" &&
+    hasValidLastToolCall &&
+    typeof candidate.maxAttempts === "number" &&
+    typeof candidate.reason === "string" &&
+    candidate.recovery === "checkpoint"
   );
 }
