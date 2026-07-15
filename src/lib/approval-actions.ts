@@ -1,9 +1,13 @@
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
+import type { FilesystemApprovalPreview } from "@/lib/agent/services/filesystem-service";
 import type { MemorySavePreview } from "@/lib/server/memory-store";
 
 export const APPROVAL_GATED_TOOL_NAMES = [
   "save_memory",
   "delete_memory",
+  "write_file",
+  "edit_file",
+  "delete_file",
 ] as const;
 
 export type ApprovalGatedToolName = (typeof APPROVAL_GATED_TOOL_NAMES)[number];
@@ -46,7 +50,7 @@ export type ApprovalPendingPayload = {
   actionId: string;
   agentId: SupportedAgent;
   args: unknown;
-  preview?: MemorySavePreview;
+  preview?: MemorySavePreview | FilesystemApprovalPreview;
   toolCallId: string;
   toolName: ApprovalGatedToolName;
 };

@@ -25,6 +25,11 @@ import {
   mergeAgentMessages,
 } from "@/lib/server/thread-store";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
+import {
+  previewFilesystemDelete,
+  previewFilesystemEdit,
+  previewFilesystemWrite,
+} from "@/lib/agent/services/filesystem-service";
 import type {
   AgentDefinition,
   AgentMessage,
@@ -69,6 +74,14 @@ type CoordinatorToolSummary = {
   isError: boolean;
   summary: string;
 };
+type ApprovalPreparation =
+  | {
+      preview?: ApprovalPendingPayload["preview"];
+      requiresApproval: true;
+    }
+  | {
+      requiresApproval: false;
+    };
 
 let checkpointer: AgentCheckpointer | null = null;
 let checkpointerPromise: Promise<AgentCheckpointer> | null = null;
@@ -384,26 +397,28 @@ function createToolCallStreamingMiddleware(
           toolCallId,
           toolName,
         });
-        runLogger?.info(
-          {
-            approvalId: pendingAction.actionId,
+        if (pendingAction) {
+          runLogger?.info(
+            {
+              approvalId: pendingAction.actionId,
+              toolCallId,
+              toolName,
+            },
+            "agent tool call requires approval",
+          );
+          onStreamEvent({
+            type: "tool_call",
+            approval: createToolApprovalPayload(pendingAction),
+            args,
+            status: "requires_action",
             toolCallId,
             toolName,
-          },
-          "agent tool call requires approval",
-        );
-        onStreamEvent({
-          type: "tool_call",
-          approval: createToolApprovalPayload(pendingAction),
-          args,
-          status: "requires_action",
-          toolCallId,
-          toolName,
-        });
-        throw new ToolApprovalRequiredError(
-          pendingAction,
-          createApprovalRequiredMessage(toolName, args),
-        );
+          });
+          throw new ToolApprovalRequiredError(
+            pendingAction,
+            createApprovalRequiredMessage(toolName, args),
+          );
+        }
       }
 
       runLogger?.debug(
@@ -516,11 +531,15 @@ async function createToolApprovalAction({
     throw new Error("人工确认工具需要 tenant/user/thread 上下文。");
   }
 
-  const preview = await createApprovalPreview({
+  const approvalPreparation = await prepareApprovalAction({
     args,
+    threadId: approvalContext.threadId,
     threadScope: approvalContext.threadScope,
     toolName,
   });
+  if (!approvalPreparation.requiresApproval) {
+    return null;
+  }
 
   const pendingAction = await createPendingAction(approvalContext.threadScope, {
     agentId: approvalContext.agentId,
@@ -538,15 +557,14 @@ async function createToolApprovalAction({
     actionId: pendingAction.actionId,
     agentId: approvalContext.agentId,
     args,
-    preview,
+    preview: approvalPreparation.preview,
     toolCallId,
     toolName,
   } satisfies ApprovalPendingPayload;
 }
 
 function createToolApprovalPayload(action: ApprovalPendingPayload) {
-  const actionLabel =
-    action.toolName === "save_memory" ? "保存记忆" : "删除记忆";
+  const actionLabel = getApprovalActionLabel(action.toolName);
 
   return {
     id: action.actionId,
@@ -561,14 +579,53 @@ function createToolApprovalPayload(action: ApprovalPendingPayload) {
         id: "reject-once",
         kind: "reject-once",
         label: "取消",
-        description: "取消本次工具调用，不修改长期记忆。",
+        description: getApprovalRejectDescription(action.toolName),
       },
     ],
     ...(action.preview ? { preview: action.preview } : {}),
   };
 }
 
-async function createApprovalPreview({
+async function prepareApprovalAction({
+  args,
+  threadId,
+  threadScope,
+  toolName,
+}: {
+  args: unknown;
+  threadId: string;
+  threadScope: ThreadScope;
+  toolName: ApprovalGatedToolName;
+}): Promise<ApprovalPreparation> {
+  if (isFilesystemMutationToolName(toolName)) {
+    const preview = await createFilesystemApprovalPreview({
+      args,
+      threadId,
+      threadScope,
+      toolName,
+    });
+
+    return preview
+      ? {
+          preview,
+          requiresApproval: true,
+        }
+      : {
+          requiresApproval: false,
+        };
+  }
+
+  return {
+    preview: await createMemoryApprovalPreview({
+      args,
+      threadScope,
+      toolName,
+    }),
+    requiresApproval: true,
+  };
+}
+
+async function createMemoryApprovalPreview({
   args,
   threadScope,
   toolName,
@@ -597,6 +654,80 @@ async function createApprovalPreview({
   })) ?? undefined;
 }
 
+async function createFilesystemApprovalPreview({
+  args,
+  threadId,
+  threadScope,
+  toolName,
+}: {
+  args: unknown;
+  threadId: string;
+  threadScope: ThreadScope;
+  toolName: ApprovalGatedToolName;
+}) {
+  if (!isRecord(args)) {
+    return undefined;
+  }
+
+  const inputPath = typeof args.path === "string" ? args.path : "";
+  if (!inputPath) {
+    return undefined;
+  }
+
+  if (toolName === "write_file") {
+    if (typeof args.content !== "string") {
+      return undefined;
+    }
+
+    const preview = await previewFilesystemWrite(
+      {
+        threadId,
+        threadScope,
+      },
+      {
+        content: args.content,
+        path: inputPath,
+      },
+    );
+    return preview.ok ? preview.preview : undefined;
+  }
+
+  if (toolName === "edit_file") {
+    if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
+      return undefined;
+    }
+
+    const preview = await previewFilesystemEdit(
+      {
+        threadId,
+        threadScope,
+      },
+      {
+        newText: args.newText,
+        oldText: args.oldText,
+        path: inputPath,
+        replaceAll: args.replaceAll === true,
+      },
+    );
+    return preview.ok ? preview.preview : undefined;
+  }
+
+  if (toolName === "delete_file") {
+    const preview = await previewFilesystemDelete(
+      {
+        threadId,
+        threadScope,
+      },
+      {
+        path: inputPath,
+      },
+    );
+    return preview.ok ? preview.preview : undefined;
+  }
+
+  return undefined;
+}
+
 function createApprovalRequiredMessage(
   toolName: ApprovalGatedToolName,
   args: unknown,
@@ -609,11 +740,68 @@ function createApprovalRequiredMessage(
     return `需要你确认后才会保存这条长期记忆${content}`;
   }
 
+  if (toolName === "write_file") {
+    return `需要你确认后才会写入文件${formatApprovalPathSuffix(args)}。`;
+  }
+
+  if (toolName === "edit_file") {
+    return `需要你确认后才会编辑文件${formatApprovalPathSuffix(args)}。`;
+  }
+
+  if (toolName === "delete_file") {
+    return `需要你确认后才会删除文件${formatApprovalPathSuffix(args)}。`;
+  }
+
   const memoryId =
     isRecord(args) && typeof args.memoryId === "string"
       ? ` ${args.memoryId}`
       : "";
   return `需要你确认后才会删除长期记忆${memoryId}。`;
+}
+
+function isFilesystemMutationToolName(
+  toolName: ApprovalGatedToolName,
+): toolName is Extract<
+  ApprovalGatedToolName,
+  "delete_file" | "edit_file" | "write_file"
+> {
+  return (
+    toolName === "write_file" ||
+    toolName === "edit_file" ||
+    toolName === "delete_file"
+  );
+}
+
+function getApprovalActionLabel(toolName: ApprovalGatedToolName) {
+  if (toolName === "save_memory") {
+    return "保存记忆";
+  }
+
+  if (toolName === "delete_memory") {
+    return "删除记忆";
+  }
+
+  if (toolName === "write_file") {
+    return "写入文件";
+  }
+
+  if (toolName === "edit_file") {
+    return "编辑文件";
+  }
+
+  return "删除文件";
+}
+
+function getApprovalRejectDescription(toolName: ApprovalGatedToolName) {
+  return toolName === "save_memory" || toolName === "delete_memory"
+    ? "取消本次工具调用，不修改长期记忆。"
+    : "取消本次工具调用，不修改文件。";
+}
+
+function formatApprovalPathSuffix(args: unknown) {
+  return isRecord(args) && typeof args.path === "string" && args.path.trim()
+    ? ` \`${args.path.trim()}\``
+    : "";
 }
 
 function createApprovalPendingStructuredResponse(
@@ -1067,12 +1255,28 @@ function createFilesystemToolSummary(
     summary = summarizeDirectoryListing(content);
   }
 
+  if (event.toolName === "glob_files") {
+    summary = summarizeGlobFiles(content);
+  }
+
   if (event.toolName === "read_filesystem_file") {
     summary = summarizeReadFile(content);
   }
 
   if (event.toolName === "search_filesystem_text") {
     summary = summarizeTextSearch(content);
+  }
+
+  if (event.toolName === "write_file") {
+    summary = summarizeWrittenFile(content);
+  }
+
+  if (event.toolName === "edit_file") {
+    summary = summarizeEditedFile(content);
+  }
+
+  if (event.toolName === "delete_file") {
+    summary = summarizeDeletedFile(content);
   }
 
   return summary
@@ -1193,14 +1397,26 @@ function getFilesystemToolCallWeight(event: ToolCallStreamEvent) {
   }
 
   if (event.toolName === "read_filesystem_file") {
-    return 2;
-  }
-
-  if (event.toolName === "search_filesystem_text") {
     return 3;
   }
 
-  return 4;
+  if (event.toolName === "search_filesystem_text") {
+    return 4;
+  }
+
+  if (event.toolName === "glob_files") {
+    return 2;
+  }
+
+  if (
+    event.toolName === "write_file" ||
+    event.toolName === "edit_file" ||
+    event.toolName === "delete_file"
+  ) {
+    return 5;
+  }
+
+  return 6;
 }
 
 function summarizeDirectoryListing(content: Record<string, unknown>) {
@@ -1263,6 +1479,53 @@ function summarizeTextSearch(content: Record<string, unknown>) {
   return [`搜索 ${JSON.stringify(query)} 的结果：`, ...matchLines]
     .join("\n")
     .concat(truncated);
+}
+
+function summarizeGlobFiles(content: Record<string, unknown>) {
+  const pattern = typeof content.pattern === "string" ? content.pattern : "";
+  const targetPath = formatFilesystemPath(content.path);
+  const matches = Array.isArray(content.matches) ? content.matches : [];
+
+  if (matches.length === 0) {
+    return `在沙盒路径 ${targetPath} 下没有找到匹配 ${JSON.stringify(pattern)} 的文件。`;
+  }
+
+  const matchLines = matches
+    .slice(0, FALLBACK_SEARCH_MATCH_LIMIT)
+    .map(formatFilesystemMatch)
+    .filter((line): line is string => Boolean(line));
+  const truncated =
+    content.truncated === true || matches.length > matchLines.length
+      ? "\n结果已截断。"
+      : "";
+
+  return [`匹配 ${JSON.stringify(pattern)} 的文件：`, ...matchLines]
+    .join("\n")
+    .concat(truncated);
+}
+
+function summarizeWrittenFile(content: Record<string, unknown>) {
+  const targetPath = formatFilesystemPath(content.path);
+  const operation = content.operation === "create" ? "创建" : "覆盖";
+  const size =
+    typeof content.sizeBytes === "number" ? `，大小 ${content.sizeBytes} bytes` : "";
+
+  return `已${operation}文件 ${targetPath}${size}。`;
+}
+
+function summarizeEditedFile(content: Record<string, unknown>) {
+  const targetPath = formatFilesystemPath(content.path);
+  const replacements =
+    typeof content.replacements === "number" ? content.replacements : 0;
+
+  return replacements > 0
+    ? `已编辑文件 ${targetPath}，替换 ${replacements} 处文本。`
+    : `已编辑文件 ${targetPath}。`;
+}
+
+function summarizeDeletedFile(content: Record<string, unknown>) {
+  const targetPath = formatFilesystemPath(content.path);
+  return `已删除文件 ${targetPath}。`;
 }
 
 function summarizeSavedMemory(content: Record<string, unknown>) {
@@ -1342,6 +1605,21 @@ function formatSearchMatch(match: unknown) {
   }
 
   return `- ${matchPath}:${lineNumber ?? "?"} ${line}`;
+}
+
+function formatFilesystemMatch(match: unknown) {
+  if (!isRecord(match)) {
+    return null;
+  }
+
+  const matchPath = typeof match.path === "string" ? match.path : "";
+  if (!matchPath) {
+    return null;
+  }
+
+  const size =
+    typeof match.sizeBytes === "number" ? `，${match.sizeBytes} bytes` : "";
+  return `- ${matchPath}${size}`;
 }
 
 function formatMemoryEntry(memory: unknown) {

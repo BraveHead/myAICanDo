@@ -1023,6 +1023,7 @@ function ToolCallPart({
   const approvalApproved = approval?.approved === true;
   const approvalRejected = approval?.approved === false;
   const approvalPreview = getApprovalPreview(approval);
+  const approvalSubject = getApprovalSubject(toolName, approvalPreview);
   const failed = isError || status.type === "incomplete";
   const Icon =
     approvalPending || approvalRejected || failed
@@ -1072,7 +1073,9 @@ function ToolCallPart({
         <ToolPayload label="参数" value={displayArgs} />
         {approvalPending && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
-            <div className="font-medium">该记忆操作需要你确认后才会执行。</div>
+            <div className="font-medium">
+              该{approvalSubject}需要你确认后才会执行。
+            </div>
             {approvalPreview && <ApprovalPreview preview={approvalPreview} />}
             <div className="mt-2 flex flex-wrap gap-2">
               <button
@@ -1099,12 +1102,12 @@ function ToolCallPart({
         )}
         {approvalApproved && result === undefined && (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">
-            已确认，服务端会继续执行该记忆操作并返回结果。
+            已确认，服务端会继续执行该{approvalSubject}并返回结果。
           </div>
         )}
         {approvalRejected && (
           <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs leading-5 text-zinc-700">
-            已取消，本次不会修改长期记忆。
+            已取消，本次不会修改{approvalSubject === "文件操作" ? "文件" : "长期记忆"}。
           </div>
         )}
         {!running && !approvalPending && result !== undefined && (
@@ -1115,7 +1118,7 @@ function ToolCallPart({
   );
 }
 
-type ApprovalPreviewData = {
+type MemoryApprovalPreviewData = {
   category: string;
   content: string;
   extraction: {
@@ -1136,7 +1139,52 @@ type ApprovalPreviewData = {
   willReplace: boolean;
 };
 
+type FilesystemApprovalPreviewData =
+  | {
+      contentPreview: string;
+      kind: "write";
+      operation: "create" | "overwrite";
+      path: string;
+      previousSizeBytes?: number;
+      sizeBytes: number;
+      summary: string;
+    }
+  | {
+      after: string;
+      before: string;
+      kind: "edit";
+      newSizeBytes: number;
+      path: string;
+      replaceAll: boolean;
+      replacements: number;
+      sizeBytes: number;
+      summary: string;
+    }
+  | {
+      contentPreview?: string;
+      kind: "delete";
+      path: string;
+      sizeBytes: number;
+      summary: string;
+    };
+
+type ApprovalPreviewData =
+  | FilesystemApprovalPreviewData
+  | MemoryApprovalPreviewData;
+
 function ApprovalPreview({ preview }: { preview: ApprovalPreviewData }) {
+  if (isFilesystemPreview(preview)) {
+    return <FilesystemApprovalPreview preview={preview} />;
+  }
+
+  return <MemoryApprovalPreview preview={preview} />;
+}
+
+function MemoryApprovalPreview({
+  preview,
+}: {
+  preview: MemoryApprovalPreviewData;
+}) {
   return (
     <div className="mt-2 space-y-2 rounded-md border border-amber-200 bg-white/70 px-3 py-2">
       <div>
@@ -1184,12 +1232,76 @@ function ApprovalPreview({ preview }: { preview: ApprovalPreviewData }) {
   );
 }
 
+function FilesystemApprovalPreview({
+  preview,
+}: {
+  preview: FilesystemApprovalPreviewData;
+}) {
+  return (
+    <div className="mt-2 space-y-2 rounded-md border border-amber-200 bg-white/70 px-3 py-2">
+      <div>
+        <span className="font-medium">操作：</span>
+        {getFilesystemPreviewActionLabel(preview)}
+      </div>
+      <div>
+        <span className="font-medium">路径：</span>
+        {preview.path}
+      </div>
+      <div>
+        <span className="font-medium">大小：</span>
+        {formatBytes(preview.sizeBytes)}
+        {preview.kind === "write" && preview.previousSizeBytes !== undefined
+          ? `，原大小 ${formatBytes(preview.previousSizeBytes)}`
+          : ""}
+        {preview.kind === "edit"
+          ? ` -> ${formatBytes(preview.newSizeBytes)}`
+          : ""}
+      </div>
+      {preview.kind === "edit" && (
+        <div className="grid gap-2">
+          <div>
+            <div className="mb-1 font-medium">替换前</div>
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white px-2 py-1.5 font-mono text-[11px] leading-5 text-amber-950">
+              {preview.before}
+            </pre>
+          </div>
+          <div>
+            <div className="mb-1 font-medium">替换后</div>
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white px-2 py-1.5 font-mono text-[11px] leading-5 text-amber-950">
+              {preview.after}
+            </pre>
+          </div>
+          <div>
+            替换次数：{preview.replacements}
+            {preview.replaceAll ? "（全部匹配）" : "（唯一匹配）"}
+          </div>
+        </div>
+      )}
+      {preview.kind !== "edit" && preview.contentPreview && (
+        <div>
+          <div className="mb-1 font-medium">
+            {preview.kind === "delete" ? "将删除内容预览" : "写入内容预览"}
+          </div>
+          <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white px-2 py-1.5 font-mono text-[11px] leading-5 text-amber-950">
+            {preview.contentPreview}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function getApprovalPreview(approval: unknown): ApprovalPreviewData | null {
   if (!isPlainRecord(approval) || !isPlainRecord(approval.preview)) {
     return null;
   }
 
   const preview = approval.preview;
+  const filesystemPreview = parseFilesystemApprovalPreview(preview);
+  if (filesystemPreview) {
+    return filesystemPreview;
+  }
+
   const replacedMemory = isPlainRecord(preview.replacedMemory)
     ? {
         content:
@@ -1226,7 +1338,7 @@ function getApprovalPreview(approval: unknown): ApprovalPreviewData | null {
 
 function parseApprovalExtraction(
   value: unknown,
-): ApprovalPreviewData["extraction"] {
+): MemoryApprovalPreviewData["extraction"] {
   if (!isPlainRecord(value)) {
     return null;
   }
@@ -1240,6 +1352,119 @@ function parseApprovalExtraction(
     source: typeof value.source === "string" ? value.source : "rule",
     value: typeof value.value === "string" ? value.value : null,
   };
+}
+
+function parseFilesystemApprovalPreview(
+  preview: Record<string, unknown>,
+): FilesystemApprovalPreviewData | null {
+  const kind = typeof preview.kind === "string" ? preview.kind : "";
+  const path = typeof preview.path === "string" ? preview.path : "";
+  const sizeBytes =
+    typeof preview.sizeBytes === "number" ? preview.sizeBytes : undefined;
+  const summary = typeof preview.summary === "string" ? preview.summary : "";
+  if (!path || sizeBytes === undefined || !summary) {
+    return null;
+  }
+
+  if (kind === "write") {
+    const operation =
+      preview.operation === "overwrite" ? "overwrite" : "create";
+    return {
+      contentPreview:
+        typeof preview.contentPreview === "string" ? preview.contentPreview : "",
+      kind,
+      operation,
+      path,
+      previousSizeBytes:
+        typeof preview.previousSizeBytes === "number"
+          ? preview.previousSizeBytes
+          : undefined,
+      sizeBytes,
+      summary,
+    };
+  }
+
+  if (kind === "edit") {
+    if (
+      typeof preview.before !== "string" ||
+      typeof preview.after !== "string" ||
+      typeof preview.newSizeBytes !== "number" ||
+      typeof preview.replacements !== "number"
+    ) {
+      return null;
+    }
+
+    return {
+      after: preview.after,
+      before: preview.before,
+      kind,
+      newSizeBytes: preview.newSizeBytes,
+      path,
+      replaceAll: preview.replaceAll === true,
+      replacements: preview.replacements,
+      sizeBytes,
+      summary,
+    };
+  }
+
+  if (kind === "delete") {
+    return {
+      kind,
+      path,
+      sizeBytes,
+      summary,
+      ...(typeof preview.contentPreview === "string"
+        ? { contentPreview: preview.contentPreview }
+        : {}),
+    };
+  }
+
+  return null;
+}
+
+function getApprovalSubject(
+  toolName: string,
+  preview: ApprovalPreviewData | null,
+) {
+  if (
+    (preview && isFilesystemPreview(preview)) ||
+    toolName === "write_file" ||
+    toolName === "edit_file" ||
+    toolName === "delete_file"
+  ) {
+    return "文件操作";
+  }
+
+  return "记忆操作";
+}
+
+function isFilesystemPreview(
+  preview: ApprovalPreviewData,
+): preview is FilesystemApprovalPreviewData {
+  return (
+    "kind" in preview &&
+    (preview.kind === "write" ||
+      preview.kind === "edit" ||
+      preview.kind === "delete")
+  );
+}
+
+function getFilesystemPreviewActionLabel(
+  preview: FilesystemApprovalPreviewData,
+) {
+  if (preview.kind === "write") {
+    return preview.operation === "create" ? "创建文件" : "覆盖文件";
+  }
+
+  if (preview.kind === "edit") {
+    return "编辑文件";
+  }
+
+  return "删除文件";
+}
+
+function formatBytes(sizeBytes: number) {
+  return `${sizeBytes} bytes`;
 }
 
 type ToolRetryInfo = {

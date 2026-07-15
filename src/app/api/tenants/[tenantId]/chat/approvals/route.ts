@@ -10,6 +10,14 @@ import {
   type DeleteUserMemoryResult,
   type SaveUserMemoryResult,
 } from "@/lib/agent/services/memory-service";
+import {
+  deleteFilesystemFile,
+  editFilesystemFile,
+  writeFilesystemFile,
+  type DeleteFilesystemFileResult,
+  type EditFilesystemFileResult,
+  type WriteFilesystemFileResult,
+} from "@/lib/agent/services/filesystem-service";
 import { isSupportedAgent } from "@/lib/agent/shared/agent-ids";
 import { authErrorResponse, requireTenantAccess } from "@/lib/server/saas";
 import {
@@ -37,6 +45,11 @@ type ApprovalRouteContext = {
 };
 
 type MemoryMutationResult = SaveUserMemoryResult | DeleteUserMemoryResult;
+type FilesystemMutationResult =
+  | DeleteFilesystemFileResult
+  | EditFilesystemFileResult
+  | WriteFilesystemFileResult;
+type ToolMutationResult = FilesystemMutationResult | MemoryMutationResult;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -257,7 +270,7 @@ async function executeApprovedAction(
       return createInvalidArgsResponse(action, input.message);
     }
 
-    return createMemoryMutationResponse({
+    return createToolMutationResponse({
       action,
       result: await saveUserMemory(
         {
@@ -275,7 +288,7 @@ async function executeApprovedAction(
       return createInvalidArgsResponse(action, input.message);
     }
 
-    return createMemoryMutationResponse({
+    return createToolMutationResponse({
       action,
       result: await deleteUserMemory(
         {
@@ -287,15 +300,69 @@ async function executeApprovedAction(
     });
   }
 
+  if (action.toolName === "write_file") {
+    const input = getWriteFileInput(action.args);
+    if (!input.ok) {
+      return createInvalidArgsResponse(action, input.message);
+    }
+
+    return createToolMutationResponse({
+      action,
+      result: await writeFilesystemFile(
+        {
+          threadId: action.threadId,
+          threadScope,
+        },
+        input.value,
+      ),
+    });
+  }
+
+  if (action.toolName === "edit_file") {
+    const input = getEditFileInput(action.args);
+    if (!input.ok) {
+      return createInvalidArgsResponse(action, input.message);
+    }
+
+    return createToolMutationResponse({
+      action,
+      result: await editFilesystemFile(
+        {
+          threadId: action.threadId,
+          threadScope,
+        },
+        input.value,
+      ),
+    });
+  }
+
+  if (action.toolName === "delete_file") {
+    const input = getDeleteFileInput(action.args);
+    if (!input.ok) {
+      return createInvalidArgsResponse(action, input.message);
+    }
+
+    return createToolMutationResponse({
+      action,
+      result: await deleteFilesystemFile(
+        {
+          threadId: action.threadId,
+          threadScope,
+        },
+        input.value,
+      ),
+    });
+  }
+
   return createInvalidArgsResponse(action, "Unsupported approval-gated tool.");
 }
 
-function createMemoryMutationResponse({
+function createToolMutationResponse({
   action,
   result,
 }: {
   action: StoredPendingAction;
-  result: MemoryMutationResult;
+  result: ToolMutationResult;
 }): ApprovalExecutionResponse {
   const toolResult = {
     content: JSON.stringify(result),
@@ -340,10 +407,11 @@ function createRejectedApprovalResponse({
   approvalId: string;
   reason?: string;
 }): ApprovalExecutionResponse {
-  const finalText = reason?.trim()
-    ? `已取消这次记忆操作：${reason.trim()}`
-    : "已取消这次记忆操作。";
   const toolName = action?.toolName ?? "save_memory";
+  const actionLabel = getApprovalActionTypeLabel(toolName);
+  const finalText = reason?.trim()
+    ? `已取消这次${actionLabel}：${reason.trim()}`
+    : `已取消这次${actionLabel}。`;
   const toolCallId = action?.toolCallId ?? approvalId;
   const toolResult = createToolErrorResult({
     code: "approval_rejected",
@@ -523,8 +591,118 @@ function getDeleteMemoryInput(args: Record<string, unknown>):
   };
 }
 
+function getWriteFileInput(args: Record<string, unknown>):
+  | {
+      ok: true;
+      value: {
+        content: string;
+        path: string;
+      };
+    }
+  | { ok: false; message: string } {
+  const path = normalizeNonEmptyString(args.path);
+  if (!path) {
+    return {
+      ok: false,
+      message: "write_file.path must be a non-empty string.",
+    };
+  }
+
+  if (typeof args.content !== "string") {
+    return {
+      ok: false,
+      message: "write_file.content must be a string.",
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      content: args.content,
+      path,
+    },
+  };
+}
+
+function getEditFileInput(args: Record<string, unknown>):
+  | {
+      ok: true;
+      value: {
+        newText: string;
+        oldText: string;
+        path: string;
+        replaceAll?: boolean;
+      };
+    }
+  | { ok: false; message: string } {
+  const path = normalizeNonEmptyString(args.path);
+  if (!path) {
+    return {
+      ok: false,
+      message: "edit_file.path must be a non-empty string.",
+    };
+  }
+
+  const oldText = typeof args.oldText === "string" ? args.oldText : "";
+  if (!oldText) {
+    return {
+      ok: false,
+      message: "edit_file.oldText must be a non-empty string.",
+    };
+  }
+
+  if (typeof args.newText !== "string") {
+    return {
+      ok: false,
+      message: "edit_file.newText must be a string.",
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      newText: args.newText,
+      oldText,
+      path,
+      ...(typeof args.replaceAll === "boolean"
+        ? { replaceAll: args.replaceAll }
+        : {}),
+    },
+  };
+}
+
+function getDeleteFileInput(args: Record<string, unknown>):
+  | {
+      ok: true;
+      value: {
+        path: string;
+      };
+    }
+  | { ok: false; message: string } {
+  const path = normalizeNonEmptyString(args.path);
+  if (!path) {
+    return {
+      ok: false,
+      message: "delete_file.path must be a non-empty string.",
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      path,
+    },
+  };
+}
+
 function isTerminalStatus(status: ApprovalActionStatus) {
   return status === "executed" || status === "rejected" || status === "failed";
+}
+
+function getApprovalActionTypeLabel(toolName: ApprovalGatedToolName) {
+  return toolName === "save_memory" || toolName === "delete_memory"
+    ? "记忆操作"
+    : "文件操作";
 }
 
 function normalizeNonEmptyString(value: unknown) {
