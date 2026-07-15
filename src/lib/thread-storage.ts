@@ -69,6 +69,33 @@ export async function loadRepositoryFromServer(
   }
 }
 
+export async function saveRepositoryToServer({
+  repository,
+  tenantHashId,
+  threadId,
+}: {
+  repository: ExportedMessageRepository;
+  tenantHashId: string;
+  threadId: string;
+}) {
+  const response = await fetch(
+    getTenantApiPath(tenantHashId, `/threads/${encodeURIComponent(threadId)}`),
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        repository,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error("线程状态保存失败。");
+  }
+}
+
 export function getThreadTitle(messages: readonly ThreadMessage[]) {
   const firstUserText = messages
     .find((message) => message.role === "user")

@@ -1,3 +1,5 @@
+import type { TodoState } from "@/lib/agent/harness/planning/types";
+
 export type ChatStreamEvent =
   | {
       text: string;
@@ -38,7 +40,17 @@ export type ChatStreamEvent =
   | {
       response: unknown;
       type: "structured_response";
-    };
+    }
+  | ({
+      type: "todo_update";
+    } & TodoState);
+
+const CHAT_STREAM_EVENT_TYPES = new Set<ChatStreamEvent["type"]>([
+  "text_delta",
+  "tool_call",
+  "structured_response",
+  "todo_update",
+]);
 
 export function encodeChatSseEvent(event: ChatStreamEvent) {
   return [
@@ -47,6 +59,33 @@ export function encodeChatSseEvent(event: ChatStreamEvent) {
     "",
     "",
   ].join("\n");
+}
+
+export function isChatStreamEvent(
+  value: unknown,
+  eventType?: string,
+): value is ChatStreamEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const candidate = value as Partial<ChatStreamEvent>;
+  if (
+    typeof candidate.type !== "string" ||
+    !CHAT_STREAM_EVENT_TYPES.has(candidate.type as ChatStreamEvent["type"])
+  ) {
+    return false;
+  }
+
+  if (eventType && candidate.type !== eventType) {
+    return false;
+  }
+
+  if (candidate.type === "todo_update") {
+    return isTodoUpdateEvent(candidate);
+  }
+
+  return true;
 }
 
 function toJsonSafeValue(value: unknown): unknown {
@@ -75,5 +114,15 @@ function toJsonSafeValue(value: unknown): unknown {
       key,
       toJsonSafeValue(entry),
     ]),
+  );
+}
+
+function isTodoUpdateEvent(value: Partial<ChatStreamEvent>) {
+  const candidate = value as Partial<Extract<ChatStreamEvent, { type: "todo_update" }>>;
+  return (
+    typeof candidate.agentId === "string" &&
+    typeof candidate.revision === "number" &&
+    Array.isArray(candidate.todos) &&
+    typeof candidate.updatedAt === "string"
   );
 }

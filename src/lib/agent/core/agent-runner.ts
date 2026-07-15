@@ -30,6 +30,10 @@ import {
   previewFilesystemEdit,
   previewFilesystemWrite,
 } from "@/lib/agent/services/filesystem-service";
+import {
+  getThreadTodoState,
+  type TodoState,
+} from "@/lib/agent/harness/planning";
 import type {
   AgentDefinition,
   AgentMessage,
@@ -116,6 +120,7 @@ export async function createConfiguredAgent(
     runLogger?: Logger;
     threadId?: string;
     threadScope?: ThreadScope;
+    todoState?: TodoState | null;
   },
 ) {
   return createHarnessedAgent({
@@ -150,6 +155,10 @@ export async function* streamConfiguredAgentEvents({
     threadId,
     userHashId: threadScope?.userHashId,
   });
+  const todoState =
+    threadId && threadScope
+      ? await getThreadTodoState(threadScope, threadId)
+      : null;
   const agent = await createConfiguredAgent(definition, {
     ...modelOptions,
     memoryContext,
@@ -165,6 +174,7 @@ export async function* streamConfiguredAgentEvents({
     runLogger,
     threadId,
     threadScope,
+    todoState,
   });
   const agentCheckpointer = await getAgentCheckpointer();
   const agentThreadId = threadId
@@ -252,6 +262,7 @@ export async function* streamConfiguredAgentEvents({
       agentThreadId,
       checkpointer: getCheckpointerType(agentCheckpointer),
       hasMemoryContext: Boolean(memoryContext),
+      hasTodoState: Boolean(todoState?.todos.length),
       invocationMessageCount: invocationMessages.length,
       recursionLimit,
       timeoutMs,

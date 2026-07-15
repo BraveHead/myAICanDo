@@ -19,9 +19,11 @@ import {
   Bot,
   Brain,
   CheckCircle2,
+  Circle,
   Code2,
   FolderSearch,
   Lightbulb,
+  ListChecks,
   LoaderCircle,
   Mic,
   PanelLeft,
@@ -53,6 +55,7 @@ import {
   loadRepositoryFromServer,
   loadThreadsFromServer,
   saveActiveThreadId,
+  saveRepositoryToServer,
   type StoredThread,
 } from "@/lib/thread-storage";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
@@ -391,12 +394,25 @@ function ChatWorkspaceContent({
       return;
     }
 
-    if (previousRunningRef.current && !isRunning) {
-      void refreshThreads(activeThreadId);
+    if (previousRunningRef.current && !isRunning && activeThreadId) {
+      const repository = aui.thread().export();
+      void (async () => {
+        try {
+          await saveRepositoryToServer({
+            repository,
+            tenantHashId,
+            threadId: activeThreadId,
+          });
+        } catch {
+          // 线程文本已由服务端保存；这里失败只影响 tool/data 卡片恢复。
+        } finally {
+          await refreshThreads(activeThreadId);
+        }
+      })();
     }
 
     previousRunningRef.current = isRunning;
-  }, [activeThreadId, hydrated, isRunning, refreshThreads]);
+  }, [activeThreadId, hydrated, isRunning, refreshThreads, aui, tenantHashId]);
 
   const activeThread = useMemo(
     () => threads.find((thread) => thread.id === activeThreadId),
@@ -973,6 +989,7 @@ function AssistantMessage() {
               data: {
                 by_name: {
                   structured_response: StructuredResponsePart,
+                  todo_state: TodoStatePart,
                 },
               },
             }}
@@ -1002,6 +1019,146 @@ function StructuredResponsePart({ data }: DataMessagePartProps) {
       </div>
     </div>
   );
+}
+
+type TodoStateData = {
+  agentId: string;
+  revision: number;
+  todos: Array<{
+    content: string;
+    id: string;
+    status: "pending" | "in_progress" | "completed";
+  }>;
+  updatedAt: string;
+};
+
+function TodoStatePart({ data }: DataMessagePartProps) {
+  const state = parseTodoState(data);
+  if (!state) {
+    return null;
+  }
+
+  const completedCount = state.todos.filter(
+    (todo) => todo.status === "completed",
+  ).length;
+
+  return (
+    <div className="my-3 overflow-hidden rounded-xl border border-[#dfe8e3] bg-[#fbfdfb] text-sm text-[#202020]">
+      <div className="flex items-center justify-between gap-3 border-b border-[#e7eee9] px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 font-medium">
+          <ListChecks size={15} />
+          <span>任务进度</span>
+        </div>
+        <span className="shrink-0 text-xs text-[#66756b]">
+          {completedCount}/{state.todos.length}
+        </span>
+      </div>
+      <ol className="space-y-2 px-3 py-2">
+        {state.todos.map((todo) => {
+          const status = getTodoStatusView(todo.status);
+          const Icon = status.icon;
+
+          return (
+            <li key={todo.id} className="flex min-w-0 items-start gap-2">
+              <Icon
+                className={`mt-1 shrink-0 ${status.className}`}
+                size={14}
+              />
+              <span
+                className={`min-w-0 flex-1 break-words text-[13px] leading-5 ${
+                  todo.status === "completed"
+                    ? "text-[#66756b] line-through decoration-[#9cb3a4]"
+                    : "text-[#1f2a22]"
+                }`}
+              >
+                {todo.content}
+              </span>
+              <span className="shrink-0 rounded-full border border-[#dfe8e3] bg-white px-2 py-0.5 text-[11px] leading-4 text-[#66756b]">
+                {status.label}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="border-t border-[#e7eee9] px-3 py-1.5 text-[11px] leading-4 text-[#7a857d]">
+        revision {state.revision} · {formatMemoryDate(state.updatedAt)}
+      </div>
+    </div>
+  );
+}
+
+function parseTodoState(data: unknown): TodoStateData | null {
+  if (!isPlainRecord(data)) {
+    return null;
+  }
+
+  if (
+    typeof data.agentId !== "string" ||
+    typeof data.revision !== "number" ||
+    typeof data.updatedAt !== "string" ||
+    !Array.isArray(data.todos)
+  ) {
+    return null;
+  }
+
+  const todos = data.todos.flatMap((todo) => {
+    if (!isPlainRecord(todo)) {
+      return [];
+    }
+
+    const status: TodoStateData["todos"][number]["status"] | null =
+      todo.status === "pending" ||
+      todo.status === "in_progress" ||
+      todo.status === "completed"
+        ? todo.status
+        : null;
+    if (
+      typeof todo.id !== "string" ||
+      typeof todo.content !== "string" ||
+      !status
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        content: todo.content,
+        id: todo.id,
+        status,
+      },
+    ];
+  });
+
+  return {
+    agentId: data.agentId,
+    revision: data.revision,
+    todos,
+    updatedAt: data.updatedAt,
+  };
+}
+
+function getTodoStatusView(status: TodoStateData["todos"][number]["status"]) {
+  if (status === "completed") {
+    return {
+      className: "text-emerald-600",
+      icon: CheckCircle2,
+      label: "完成",
+    };
+  }
+
+  if (status === "in_progress") {
+    return {
+      className: "animate-spin text-blue-600",
+      icon: LoaderCircle,
+      label: "进行中",
+    };
+  }
+
+  return {
+    className: "text-[#98a39b]",
+    icon: Circle,
+    label: "待处理",
+  };
 }
 
 function ToolCallPart({

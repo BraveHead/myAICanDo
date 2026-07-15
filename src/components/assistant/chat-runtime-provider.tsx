@@ -19,6 +19,7 @@ import {
   type ApprovalExecutionResponse,
 } from "@/lib/approval-actions";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
+import { isChatStreamEvent } from "@/lib/chat-stream";
 import { loadActiveThreadId } from "@/lib/thread-storage";
 
 type ApiMessage = {
@@ -431,13 +432,8 @@ function parseChatSseEvent(frame: string): ChatStreamEvent | null {
   }
 
   try {
-    const event = JSON.parse(dataLines.join("\n")) as ChatStreamEvent;
-    if (
-      event.type === eventType &&
-      (event.type === "text_delta" ||
-        event.type === "tool_call" ||
-        event.type === "structured_response")
-    ) {
+    const event = JSON.parse(dataLines.join("\n"));
+    if (isChatStreamEvent(event, eventType)) {
       return event;
     }
   } catch {
@@ -449,6 +445,7 @@ function parseChatSseEvent(frame: string): ChatStreamEvent | null {
 
 function createAssistantContentBuilder() {
   let structuredResponsePart: ThreadAssistantMessagePart | null = null;
+  let todoStatePart: ThreadAssistantMessagePart | null = null;
   const toolParts = new Map<string, ToolCallMessagePart>();
   let requiresAction = false;
   let text = "";
@@ -462,16 +459,28 @@ function createAssistantContentBuilder() {
           requiresAction = true;
         }
         toolParts.set(event.toolCallId, toToolCallPart(event));
-      } else {
+      } else if (event.type === "structured_response") {
         structuredResponsePart = {
           type: "data",
           name: "structured_response",
           data: event.response,
         };
+      } else {
+        todoStatePart = {
+          type: "data",
+          name: "todo_state",
+          data: {
+            agentId: event.agentId,
+            revision: event.revision,
+            todos: event.todos,
+            updatedAt: event.updatedAt,
+          },
+        };
       }
 
       const content = [
         ...toolParts.values(),
+        ...(todoStatePart ? [todoStatePart] : []),
         ...(text
           ? ([{ type: "text", text }] satisfies ThreadAssistantMessagePart[])
           : []),

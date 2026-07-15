@@ -3,6 +3,11 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import type { Logger } from "pino";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
+import {
+  appendPlanningPromptContext,
+  createPlanningTools,
+  type TodoState,
+} from "./planning";
 import type {
   AgentDefinition,
   AgentToolContext,
@@ -38,6 +43,7 @@ export type AgentHarnessConfig<
   runLogger?: Logger;
   threadId?: string;
   threadScope?: ThreadScope;
+  todoState?: TodoState | null;
 };
 
 export async function createHarnessedAgent<
@@ -55,6 +61,7 @@ export async function createHarnessedAgent<
   runLogger,
   threadId,
   threadScope,
+  todoState,
 }: AgentHarnessConfig<TCheckpointer>) {
   const modelOptions: CreateProjectChatModelOptions = {
     apiKey,
@@ -72,15 +79,24 @@ export async function createHarnessedAgent<
     threadId,
     threadScope,
   });
-  const tools = resolveAgentTools(definition, {
-    threadId,
-    threadScope,
-  });
+  const tools = [
+    ...resolveAgentTools(definition, {
+      threadId,
+      threadScope,
+    }),
+    ...createPlanningTools({
+      agentId: definition.id,
+      onStreamEvent,
+      threadId,
+      threadScope,
+    }),
+  ];
 
   runLogger?.debug(
     {
       checkpointer: getCheckpointerType(agentCheckpointer),
       hasMemoryContext: Boolean(memoryContext),
+      hasTodoState: Boolean(todoState?.todos.length),
       hasResponseFormat: Boolean(definition.responseFormat),
       toolCount: tools.length,
     },
@@ -91,7 +107,7 @@ export async function createHarnessedAgent<
     model,
     tools,
     systemPrompt: appendSystemPromptContext(
-      definition.systemPrompt,
+      appendPlanningPromptContext(definition.systemPrompt, todoState),
       memoryContext,
     ),
     checkpointer: agentCheckpointer,
