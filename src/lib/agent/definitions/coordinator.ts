@@ -16,6 +16,7 @@ const SYSTEM_PROMPT = `你是一个 coordinator agent，负责把用户的复合
 
 ## 可委派能力
 
+- task：优先使用的真正 subagent 委派工具。可启动隔离的 filesystem、memory、weather 子 agent，并只返回每个子任务的 final report。
 - ask_memory_agent：只读查询当前租户和用户的长期记忆。
 - save_memory：发起“保存长期记忆”的确认请求，只有用户确认后才会真正写入。
 - delete_memory：发起“删除长期记忆”的确认请求，只有用户确认后才会真正删除。
@@ -24,6 +25,8 @@ const SYSTEM_PROMPT = `你是一个 coordinator agent，负责把用户的复合
 
 ## 规则
 
+- 对复合任务，优先调用 task，把“查记忆、搜文件、查天气”等子任务拆给对应 subagent；只有简单单步查询或兼容旧流程时才使用 ask_*_agent。
+- task 返回的是子 agent final report；父上下文不要要求或展开子 agent 的完整内部消息。
 - 只能通过委派工具获取 memory、filesystem、weather 信息，不要编造工具没有返回的事实。
 - 如果用户明确要求“记住、保存、删除、忘记”，可以调用 save_memory/delete_memory 发起确认；在用户确认前，不要声称已经写入或删除。
 - 除 save_memory/delete_memory 的确认流外，不能修改长期记忆。
@@ -36,11 +39,7 @@ const SYSTEM_PROMPT = `你是一个 coordinator agent，负责把用户的复合
 export const coordinatorAgentDefinition = {
   id: "coordinator",
   systemPrompt: SYSTEM_PROMPT,
-  tools: ({ threadId, threadScope }) =>
-    createCoordinatorTools({
-      threadId,
-      threadScope,
-    }),
+  tools: (context) => createCoordinatorTools(context),
   modelOptions: {
     temperature: 0.2,
   },

@@ -38,18 +38,25 @@ import {
   getThreadTodoState,
   type TodoState,
 } from "@/lib/agent/harness/planning";
+import {
+  getReadonlySubagentDefinition,
+  type RunSubagentTaskInput,
+  type SubagentTaskResult,
+  type SubagentToolResult,
+} from "@/lib/agent/harness/subagents";
 import type {
   AgentDefinition,
   AgentMessage,
   CreateConfiguredAgentOptions,
 } from "./agent-definition";
 
-type StreamConfiguredAgentTextOptions = CreateConfiguredAgentOptions & {
+type StreamConfiguredAgentEventsOptions = CreateConfiguredAgentOptions & {
   contextPolicy?: ContextOffloadPolicy;
   definition: AgentDefinition;
   memoryContext?: string;
   messages: AgentMessage[];
   onStreamEvent?: (event: ChatStreamEvent) => void;
+  planningEnabled?: boolean;
   runConfig?: RunnableConfig;
   signal: AbortSignal;
   threadId?: string;
@@ -122,7 +129,10 @@ export async function createConfiguredAgent(
   options: CreateConfiguredAgentOptions & {
     memoryContext?: string;
     onStreamEvent?: (event: ChatStreamEvent) => void;
+    planningEnabled?: boolean;
     runLogger?: Logger;
+    runConfig?: RunnableConfig;
+    signal?: AbortSignal;
     threadId?: string;
     threadScope?: ThreadScope;
     todoState?: TodoState | null;
@@ -135,6 +145,7 @@ export async function createConfiguredAgent(
     createMiddleware: createAgentMiddleware,
     getCheckpointer: getAgentCheckpointer,
     getCheckpointerType,
+    runSubagent: runSubagentTask,
   });
 }
 
@@ -144,12 +155,13 @@ export async function* streamConfiguredAgentEvents({
   memoryContext,
   messages,
   onStreamEvent,
+  planningEnabled = true,
   runConfig,
   signal,
   threadId,
   threadScope,
   ...modelOptions
-}: StreamConfiguredAgentTextOptions) {
+}: StreamConfiguredAgentEventsOptions) {
   const queue = createAsyncQueue<ChatStreamEvent>();
   let completedToolCallCount = 0;
   const completedToolCalls: ToolCallStreamEvent[] = [];
@@ -179,7 +191,10 @@ export async function* streamConfiguredAgentEvents({
       onStreamEvent?.(event);
       queue.push(event);
     },
+    planningEnabled,
+    runConfig,
     runLogger,
+    signal,
     threadId,
     threadScope,
     todoState,
@@ -412,14 +427,288 @@ export async function* streamConfiguredAgentEvents({
   }
 }
 
-export async function* streamConfiguredAgentText(
-  options: StreamConfiguredAgentTextOptions,
-) {
-  for await (const event of streamConfiguredAgentEvents(options)) {
-    if (event.type === "text_delta") {
-      yield event.text;
-    }
+export async function runSubagentTask({
+  agent,
+  apiKey,
+  baseURL,
+  childThreadId,
+  context,
+  contextPolicy,
+  modelName,
+  parentAgentId,
+  parentThreadId,
+  runConfig,
+  runLogger,
+  signal,
+  subtaskId,
+  task,
+  threadScope,
+}: RunSubagentTaskInput): Promise<SubagentTaskResult> {
+  const startedAt = Date.now();
+  const definition = getReadonlySubagentDefinition(agent);
+  if (!definition) {
+    return {
+      agent,
+      childThreadId,
+      error: {
+        code: "unsupported_subagent",
+        message: `Unsupported subagent: ${agent}.`,
+      },
+      ok: false,
+      subtaskId,
+      summary: `子任务执行失败：不支持的 subagent ${agent}。`,
+    };
   }
+
+  const subagentLogger = runLogger?.child({
+    childThreadId,
+    component: "subagent-runner",
+    parentAgentId,
+    parentThreadId,
+    subagentId: agent,
+    subtaskId,
+  });
+  const childRunConfig = createSubagentRunConfig(runConfig, {
+    agent,
+    childThreadId,
+    parentAgentId,
+    parentThreadId,
+    subtaskId,
+  });
+  const childSignal = signal ?? new AbortController().signal;
+  const toolResults: SubagentToolResult[] = [];
+  let structuredResponse: unknown;
+  let text = "";
+
+  subagentLogger?.info("subagent task started");
+
+  try {
+    for await (const event of streamConfiguredAgentEvents({
+      apiKey,
+      baseURL,
+      contextPolicy,
+      definition,
+      messages: [
+        {
+          role: "user",
+          content: buildSubagentTaskMessage({
+            agent,
+            context,
+            task,
+          }),
+        },
+      ],
+      modelName,
+      planningEnabled: false,
+      runConfig: childRunConfig,
+      signal: childSignal,
+      threadId: childThreadId,
+      threadScope,
+    })) {
+      if (event.type === "text_delta") {
+        text += event.text;
+      }
+
+      if (event.type === "structured_response") {
+        structuredResponse = event.response;
+      }
+
+      if (event.type === "tool_call" && event.status === "complete") {
+        const result = createSubagentToolResult(agent, event);
+        if (result) {
+          toolResults.push(result);
+        }
+      }
+    }
+
+    const structuredToolResults = getStructuredToolResults(structuredResponse);
+    const visibleToolResults =
+      structuredToolResults.length > 0 ? structuredToolResults : toolResults;
+    const summary =
+      getStructuredAnswer(structuredResponse) ||
+      text.trim() ||
+      visibleToolResults.map((result) => result.summary).join("\n\n") ||
+      "子任务已完成，但没有返回可展示摘要。";
+
+    subagentLogger?.info(
+      {
+        durationMs: Date.now() - startedAt,
+        status: "complete",
+        toolResultCount: visibleToolResults.length,
+      },
+      "subagent task completed",
+    );
+
+    return {
+      agent,
+      childThreadId,
+      ok: true,
+      subtaskId,
+      summary,
+      toolResults: visibleToolResults,
+    };
+  } catch (error) {
+    const message = formatUnknownError(error);
+    subagentLogger?.error(
+      {
+        durationMs: Date.now() - startedAt,
+        err: toLogError(error),
+        status: "error",
+      },
+      "subagent task failed",
+    );
+
+    return {
+      agent,
+      childThreadId,
+      error: {
+        code: "subagent_failed",
+        message,
+      },
+      ok: false,
+      subtaskId,
+      summary: `子任务执行失败：${message}`,
+      ...(toolResults.length > 0 ? { toolResults } : {}),
+    };
+  }
+}
+
+function createSubagentRunConfig(
+  parentRunConfig: RunnableConfig | undefined,
+  {
+    agent,
+    childThreadId,
+    parentAgentId,
+    parentThreadId,
+    subtaskId,
+  }: {
+    agent: RunSubagentTaskInput["agent"];
+    childThreadId: string;
+    parentAgentId: string;
+    parentThreadId: string;
+    subtaskId: string;
+  },
+): RunnableConfig {
+  const tags = Array.isArray(parentRunConfig?.tags) ? parentRunConfig.tags : [];
+  const metadata = isRecord(parentRunConfig?.metadata)
+    ? parentRunConfig.metadata
+    : {};
+
+  return {
+    ...parentRunConfig,
+    runName: `subagent:${agent}`,
+    tags: [...tags, `subagent:${agent}`],
+    metadata: {
+      ...metadata,
+      child_thread_id: childThreadId,
+      parent_agent_id: parentAgentId,
+      parent_thread_id: parentThreadId,
+      subagent: agent,
+      subtask_id: subtaskId,
+    },
+  };
+}
+
+function buildSubagentTaskMessage({
+  agent,
+  context,
+  task,
+}: {
+  agent: RunSubagentTaskInput["agent"];
+  context?: string;
+  task: string;
+}) {
+  const contextSection = context?.trim()
+    ? `\n\n## 补充上下文\n${context.trim()}`
+    : "";
+
+  return `请作为 ${agent} subagent 完成下面这个隔离子任务。
+
+## 子任务
+${task.trim()}${contextSection}
+
+## 输出要求
+- 只输出这个子任务的 final report。
+- 用中文回答。
+- 包含结论和关键依据。
+- 不要提及或展开父 agent 的完整上下文。`;
+}
+
+function createSubagentToolResult(
+  agent: RunSubagentTaskInput["agent"],
+  event: ToolCallStreamEvent,
+): SubagentToolResult | null {
+  if (agent === "filesystem") {
+    return toSubagentToolResult(createFilesystemToolSummary(event));
+  }
+
+  if (agent === "memory") {
+    return toSubagentToolResult(createMemoryToolSummary(event));
+  }
+
+  return createGenericSubagentToolResult(event);
+}
+
+function toSubagentToolResult(
+  summary:
+    | FilesystemToolSummary
+    | MemoryToolSummary
+    | CoordinatorToolSummary
+    | null,
+): SubagentToolResult | null {
+  return summary
+    ? {
+        summary: summary.summary,
+        toolName: summary.event.toolName,
+      }
+    : null;
+}
+
+function createGenericSubagentToolResult(
+  event: ToolCallStreamEvent,
+): SubagentToolResult | null {
+  const content = parseToolJsonContent(event.result);
+  if (isRecord(content) && typeof content.summary === "string") {
+    return {
+      summary: content.summary,
+      toolName: event.toolName,
+    };
+  }
+
+  const result = event.result;
+  if (isRecord(result) && typeof result.content === "string") {
+    return {
+      summary: result.content,
+      toolName: event.toolName,
+    };
+  }
+
+  return null;
+}
+
+function getStructuredToolResults(
+  structuredResponse: unknown,
+): SubagentToolResult[] {
+  if (!isRecord(structuredResponse) || !Array.isArray(structuredResponse.toolResults)) {
+    return [];
+  }
+
+  return structuredResponse.toolResults
+    .map((result) => {
+      if (!isRecord(result)) {
+        return null;
+      }
+
+      const summary = result.summary;
+      const toolName = result.toolName;
+      return typeof summary === "string" && typeof toolName === "string"
+        ? {
+            summary,
+            toolName,
+          }
+        : null;
+    })
+    .filter((result): result is SubagentToolResult => Boolean(result));
 }
 
 function createToolCallStreamingMiddleware(

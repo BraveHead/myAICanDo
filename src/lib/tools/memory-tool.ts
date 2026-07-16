@@ -18,6 +18,13 @@ const memoryCategorySchema = z
 export function createMemoryTools(context: MemoryServiceContext) {
   return [
     createSaveMemoryTool(context),
+    ...createMemoryReadTools(context),
+    createDeleteMemoryTool(context),
+  ];
+}
+
+export function createMemoryReadTools(context: MemoryServiceContext) {
+  return [
     tool(
       async ({
         includeHistory = false,
@@ -73,7 +80,6 @@ export function createMemoryTools(context: MemoryServiceContext) {
         }),
       },
     ),
-    createDeleteMemoryTool(context),
   ];
 }
 

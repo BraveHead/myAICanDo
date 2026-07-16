@@ -14,6 +14,7 @@ export type PromptBuildContext = {
   basePrompt?: string;
   memoryContext?: string;
   offloadPolicy?: ContextOffloadPolicy;
+  planningEnabled?: boolean;
   skillsContext?: string;
   todoState?: TodoState | null;
 };
@@ -42,6 +43,7 @@ export function buildHarnessSystemPrompt({
   basePrompt = DEFAULT_BASE_PROMPT,
   memoryContext,
   offloadPolicy,
+  planningEnabled = true,
   skillsContext,
   todoState,
 }: PromptBuildContext) {
@@ -65,7 +67,7 @@ export function buildHarnessSystemPrompt({
     {
       key: "tool-guidance",
       content: [
-        buildPlanningPromptContext(todoState),
+        planningEnabled ? buildPlanningPromptContext(todoState) : "",
         buildOffloadPromptContext(offloadPolicy),
       ].join("\n\n"),
     },

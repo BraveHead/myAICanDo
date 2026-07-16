@@ -24,7 +24,6 @@ export const literaryAgentDefinition = {
   tools: [fetchTextFromUrlTool],
   modelOptions: {
     temperature: 0.3,
-    timeout: 600_000,
   },
   responseFormat: structuredAgentResponseFormat,
   recursionLimit: 10,

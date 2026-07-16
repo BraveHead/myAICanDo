@@ -27,6 +27,84 @@ const requiredRelativePathSchema = z
 
 export function createFilesystemTools(context: FilesystemServiceContext) {
   return [
+    ...createReadonlyFilesystemTools(context),
+    tool(
+      async ({ content, path: inputPath }) =>
+        jsonResult(
+          await writeFilesystemFile(context, {
+            content,
+            path: inputPath,
+          }),
+        ),
+      {
+        name: "write_file",
+        description:
+          "Create or overwrite a UTF-8 text file in the current thread sandbox. Only workspace/** and notes/** are writable and execution requires user approval.",
+        schema: z.object({
+          path: requiredRelativePathSchema,
+          content: z
+            .string()
+            .max(FILESYSTEM_MAX_WRITE_BYTES)
+            .describe("UTF-8 text content to write."),
+        }),
+      },
+    ),
+    tool(
+      async ({
+        newText,
+        oldText,
+        path: inputPath,
+        replaceAll = false,
+      }) =>
+        jsonResult(
+          await editFilesystemFile(context, {
+            newText,
+            oldText,
+            path: inputPath,
+            replaceAll,
+          }),
+        ),
+      {
+        name: "edit_file",
+        description:
+          "Edit a UTF-8 text file with exact string replacement. By default oldText must match exactly once; replaceAll can replace up to the configured limit. Execution requires user approval.",
+        schema: z.object({
+          path: requiredRelativePathSchema,
+          oldText: z
+            .string()
+            .min(1)
+            .describe("Exact text to replace. Must be non-empty."),
+          newText: z.string().describe("Replacement text."),
+          replaceAll: z
+            .boolean()
+            .optional()
+            .describe(
+              `Replace every occurrence instead of requiring a unique match. Maximum ${FILESYSTEM_MAX_EDIT_REPLACEMENTS} replacements.`,
+            ),
+        }),
+      },
+    ),
+    tool(
+      async ({ path: inputPath }) =>
+        jsonResult(
+          await deleteFilesystemFile(context, {
+            path: inputPath,
+          }),
+        ),
+      {
+        name: "delete_file",
+        description:
+          "Delete a regular file in the current thread sandbox. Only workspace/** and notes/** are deletable; directories and symlinks are rejected. Execution requires user approval.",
+        schema: z.object({
+          path: requiredRelativePathSchema,
+        }),
+      },
+    ),
+  ];
+}
+
+export function createReadonlyFilesystemTools(context: FilesystemServiceContext) {
+  return [
     tool(
       async ({ path: inputPath = "." }) =>
         jsonResult(await listFilesystemDirectory(context, inputPath)),
@@ -117,78 +195,6 @@ export function createFilesystemTools(context: FilesystemServiceContext) {
             .max(FILESYSTEM_MAX_GLOB_RESULTS)
             .optional()
             .describe("Maximum number of matching files to return."),
-        }),
-      },
-    ),
-    tool(
-      async ({ content, path: inputPath }) =>
-        jsonResult(
-          await writeFilesystemFile(context, {
-            content,
-            path: inputPath,
-          }),
-        ),
-      {
-        name: "write_file",
-        description:
-          "Create or overwrite a UTF-8 text file in the current thread sandbox. Only workspace/** and notes/** are writable and execution requires user approval.",
-        schema: z.object({
-          path: requiredRelativePathSchema,
-          content: z
-            .string()
-            .max(FILESYSTEM_MAX_WRITE_BYTES)
-            .describe("UTF-8 text content to write."),
-        }),
-      },
-    ),
-    tool(
-      async ({
-        newText,
-        oldText,
-        path: inputPath,
-        replaceAll = false,
-      }) =>
-        jsonResult(
-          await editFilesystemFile(context, {
-            newText,
-            oldText,
-            path: inputPath,
-            replaceAll,
-          }),
-        ),
-      {
-        name: "edit_file",
-        description:
-          "Edit a UTF-8 text file with exact string replacement. By default oldText must match exactly once; replaceAll can replace up to the configured limit. Execution requires user approval.",
-        schema: z.object({
-          path: requiredRelativePathSchema,
-          oldText: z
-            .string()
-            .min(1)
-            .describe("Exact text to replace. Must be non-empty."),
-          newText: z.string().describe("Replacement text."),
-          replaceAll: z
-            .boolean()
-            .optional()
-            .describe(
-              `Replace every occurrence instead of requiring a unique match. Maximum ${FILESYSTEM_MAX_EDIT_REPLACEMENTS} replacements.`,
-            ),
-        }),
-      },
-    ),
-    tool(
-      async ({ path: inputPath }) =>
-        jsonResult(
-          await deleteFilesystemFile(context, {
-            path: inputPath,
-          }),
-        ),
-      {
-        name: "delete_file",
-        description:
-          "Delete a regular file in the current thread sandbox. Only workspace/** and notes/** are deletable; directories and symlinks are rejected. Execution requires user approval.",
-        schema: z.object({
-          path: requiredRelativePathSchema,
         }),
       },
     ),

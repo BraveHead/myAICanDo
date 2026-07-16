@@ -1,10 +1,12 @@
 import { createAgent, type AnyAgentMiddleware } from "langchain";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import type { Logger } from "pino";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
 import { buildHarnessSystemPrompt, type ContextOffloadPolicy } from "./context";
 import type { TodoState } from "./planning";
+import { createSubagentTools, type RunSubagentTask } from "./subagents";
 import { createPlanningTools } from "./tools";
 import type {
   AgentDefinition,
@@ -40,7 +42,11 @@ export type AgentHarnessConfig<
   getCheckpointerType: (checkpointer: TCheckpointer) => string;
   memoryContext?: string;
   onStreamEvent?: (event: ChatStreamEvent) => void;
+  planningEnabled?: boolean;
+  runConfig?: RunnableConfig;
   runLogger?: Logger;
+  runSubagent?: RunSubagentTask;
+  signal?: AbortSignal;
   threadId?: string;
   threadScope?: ThreadScope;
   todoState?: TodoState | null;
@@ -59,7 +65,11 @@ export async function createHarnessedAgent<
   memoryContext,
   modelName,
   onStreamEvent,
+  planningEnabled = true,
+  runConfig,
   runLogger,
+  runSubagent,
+  signal,
   threadId,
   threadScope,
   todoState,
@@ -83,15 +93,41 @@ export async function createHarnessedAgent<
   });
   const tools = [
     ...resolveAgentTools(definition, {
-      threadId,
-      threadScope,
-    }),
-    ...createPlanningTools({
-      agentId: definition.id,
+      apiKey,
+      baseURL,
+      contextPolicy,
+      modelName,
       onStreamEvent,
+      runConfig,
+      runLogger,
+      runSubagent,
+      signal,
       threadId,
       threadScope,
     }),
+    ...(definition.id === "coordinator"
+      ? createSubagentTools({
+          apiKey,
+          baseURL,
+          contextPolicy,
+          modelName,
+          onStreamEvent,
+          runConfig,
+          runLogger,
+          runSubagent,
+          signal,
+          threadId,
+          threadScope,
+        })
+      : []),
+    ...(planningEnabled
+      ? createPlanningTools({
+          agentId: definition.id,
+          onStreamEvent,
+          threadId,
+          threadScope,
+        })
+      : []),
   ];
 
   runLogger?.debug(
@@ -99,6 +135,7 @@ export async function createHarnessedAgent<
       checkpointer: getCheckpointerType(agentCheckpointer),
       hasContextPolicy: Boolean(contextPolicy),
       hasMemoryContext: Boolean(memoryContext),
+      hasPlanningTools: planningEnabled,
       hasResponseFormat: Boolean(definition.responseFormat),
       hasTodoState: Boolean(todoState?.todos.length),
       toolCount: tools.length,
@@ -107,12 +144,14 @@ export async function createHarnessedAgent<
   );
 
   return createAgent({
+    name: definition.id,
     model,
     tools,
     systemPrompt: buildHarnessSystemPrompt({
       agentPrompt: definition.systemPrompt,
       memoryContext,
       offloadPolicy: contextPolicy,
+      planningEnabled,
       todoState,
     }),
     checkpointer: agentCheckpointer,

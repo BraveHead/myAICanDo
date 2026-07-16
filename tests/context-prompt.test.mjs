@@ -49,4 +49,27 @@ describe("context prompt builder", () => {
     expect(prompt).not.toContain("## skills");
     expect(prompt).toContain("## tool-guidance");
   });
+
+  test("can disable planning prompt guidance", () => {
+    const prompt = buildHarnessSystemPrompt({
+      agentPrompt: "agent rules",
+      planningEnabled: false,
+      todoState: {
+        agentId: "filesystem",
+        revision: 1,
+        todos: [
+          {
+            content: "不应暴露给子 agent",
+            id: "todo_hidden",
+            status: "in_progress",
+          },
+        ],
+        updatedAt: "2026-07-15T00:00:00.000Z",
+      },
+    });
+
+    expect(prompt).not.toContain("write_todos");
+    expect(prompt).not.toContain("todo_hidden");
+    expect(prompt).toContain("工具结果 offloading");
+  });
 });

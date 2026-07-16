@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M4 Subagents v1 数据流程图</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #f1f4f8;
+    --line: #d8dee8;
+    --line-strong: #aeb8c8;
+    --text: #20242c;
+    --muted: #687386;
+    --blue: #2563eb;
+    --blue-soft: #eaf1ff;
+    --green: #087f5b;
+    --green-soft: #e8f7ef;
+    --amber: #a15c07;
+    --amber-soft: #fff4df;
+    --red: #b42318;
+    --red-soft: #fff1f0;
+    --violet: #6d28d9;
+    --violet-soft: #f1ebff;
+    --code: #7c3f00;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  main {
+    width: min(1260px, calc(100vw - 40px));
+    margin: 0 auto;
+    padding: 40px 0 64px;
+  }
+
+  header {
+    margin-bottom: 24px;
+  }
+
+  h1 {
+    margin: 0 0 10px;
+    color: #111827;
+    font-size: 30px;
+    line-height: 1.25;
+    letter-spacing: 0;
+  }
+
+  h2 {
+    margin: 34px 0 14px;
+    color: #111827;
+    font-size: 20px;
+    letter-spacing: 0;
+  }
+
+  h3 {
+    margin: 0 0 8px;
+    color: #111827;
+    font-size: 16px;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  code {
+    color: var(--code);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.94em;
+  }
+
+  .summary {
+    max-width: 980px;
+    color: var(--muted);
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 16px;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--muted);
+    padding: 3px 10px;
+    font-size: 12.5px;
+  }
+
+  .panel {
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--panel);
+    box-shadow: 0 10px 26px rgb(20 28 45 / 6%);
+  }
+
+  .panel + .panel {
+    margin-top: 18px;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    border-bottom: 1px solid var(--line);
+    padding: 15px 18px;
+  }
+
+  .panel-title {
+    margin: 0;
+    font-size: 17px;
+  }
+
+  .badge {
+    border-radius: 999px;
+    background: var(--blue-soft);
+    color: var(--blue);
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .diagram {
+    overflow-x: auto;
+    padding: 16px;
+  }
+
+  svg {
+    display: block;
+    width: 100%;
+    min-width: 1120px;
+    height: auto;
+  }
+
+  .lane {
+    fill: #fbfcfe;
+    stroke: var(--line);
+    stroke-width: 1;
+  }
+
+  .lane-title {
+    fill: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .node rect {
+    fill: var(--panel);
+    stroke: var(--line-strong);
+    stroke-width: 1.2;
+    rx: 8;
+  }
+
+  .node.blue rect {
+    fill: var(--blue-soft);
+    stroke: #9db8f4;
+  }
+
+  .node.green rect {
+    fill: var(--green-soft);
+    stroke: #9ed8bd;
+  }
+
+  .node.amber rect {
+    fill: var(--amber-soft);
+    stroke: #edcb91;
+  }
+
+  .node.violet rect {
+    fill: var(--violet-soft);
+    stroke: #c6b4f4;
+  }
+
+  .node.red rect {
+    fill: var(--red-soft);
+    stroke: #efaca6;
+  }
+
+  .title {
+    fill: #111827;
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .desc {
+    fill: var(--muted);
+    font-size: 12px;
+  }
+
+  .edge {
+    fill: none;
+    stroke: var(--line-strong);
+    stroke-width: 1.8;
+    marker-end: url(#arrow);
+  }
+
+  .edge.green {
+    stroke: var(--green);
+  }
+
+  .edge.blue {
+    stroke: var(--blue);
+  }
+
+  .edge.amber {
+    stroke: #b7791f;
+  }
+
+  .edge-label {
+    fill: var(--muted);
+    font-size: 12px;
+  }
+
+  .seq circle {
+    fill: #111827;
+    stroke: #ffffff;
+    stroke-width: 2;
+  }
+
+  .seq text {
+    fill: #ffffff;
+    font-size: 12px;
+    font-weight: 800;
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+
+  .grid {
+    display: grid;
+    gap: 16px;
+  }
+
+  .cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .card {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 16px;
+  }
+
+  .card p,
+  .card li {
+    color: var(--muted);
+  }
+
+  ul {
+    margin: 8px 0 0 18px;
+    padding: 0;
+  }
+
+  li {
+    margin: 5px 0;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+  }
+
+  th,
+  td {
+    border: 1px solid var(--line);
+    padding: 10px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  th {
+    background: var(--panel-2);
+    color: #111827;
+    font-weight: 700;
+  }
+
+  td {
+    background: var(--panel);
+    color: var(--muted);
+  }
+
+  .ok {
+    color: var(--green);
+    font-weight: 700;
+  }
+
+  .order-dot {
+    display: inline-grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    background: #111827;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .blocked {
+    color: var(--red);
+    font-weight: 700;
+  }
+
+  .callout {
+    border-left: 4px solid var(--blue);
+    border-radius: 10px;
+    background: var(--blue-soft);
+    color: #284266;
+    padding: 14px 16px;
+  }
+
+  @media (max-width: 860px) {
+    main {
+      width: min(100vw - 24px, 1260px);
+      padding-top: 28px;
+    }
+
+    .cols-2,
+    .cols-3 {
+      grid-template-columns: 1fr;
+    }
+
+    .panel-header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>M4 Subagents v1 数据流程图</h1>
+    <p class="summary">
+      本图描述当前改动后的 coordinator 委派链路：父 agent 通过 <code>task</code> 工具启动隔离的只读子 agent，
+      子 agent 复用现有 LangChain runner、LangGraph checkpointer 和 tenant/user/thread 隔离，只把 final report envelope 返回给父上下文。
+    </p>
+    <div class="meta">
+      <span class="pill">阶段：M4 Subagents v1</span>
+      <span class="pill">入口：coordinator <code>task</code></span>
+      <span class="pill">UI：复用 <code>tool_call</code></span>
+      <span class="pill">不新增数据库表</span>
+      <span class="pill">不开放子 agent mutation</span>
+    </div>
+  </header>
+
+  <section class="panel">
+    <div class="panel-header">
+      <h2 class="panel-title">主数据流</h2>
+      <span class="badge">parent context only receives final report</span>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 1240 720" role="img" aria-label="M4 subagents data flow">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L9,3 z" fill="#aeb8c8"></path>
+          </marker>
+        </defs>
+
+        <rect class="lane" x="18" y="38" width="260" height="616" rx="12"></rect>
+        <text class="lane-title" x="34" y="62">UI / API</text>
+
+        <rect class="lane" x="302" y="38" width="260" height="616" rx="12"></rect>
+        <text class="lane-title" x="318" y="62">Parent Agent</text>
+
+        <rect class="lane" x="586" y="38" width="286" height="616" rx="12"></rect>
+        <text class="lane-title" x="602" y="62">Task Tool / Harness</text>
+
+        <rect class="lane" x="896" y="38" width="326" height="616" rx="12"></rect>
+        <text class="lane-title" x="912" y="62">Child Subagent / Stores</text>
+
+        <g class="node blue">
+          <rect x="44" y="94" width="208" height="86"></rect>
+          <text class="title" x="62" y="122">用户发送复合任务</text>
+          <text class="desc" x="62" y="148">assistant-ui adapter</text>
+          <text class="desc" x="62" y="166">threadId + agent=coordinator</text>
+        </g>
+
+        <g class="node blue">
+          <rect x="44" y="246" width="208" height="88"></rect>
+          <text class="title" x="62" y="274">Chat API</text>
+          <text class="desc" x="62" y="300">/api/tenants/[tenantId]/chat</text>
+          <text class="desc" x="62" y="318">tenant/user scope</text>
+        </g>
+
+        <g class="node green">
+          <rect x="328" y="94" width="208" height="92"></rect>
+          <text class="title" x="346" y="122">streamConfiguredAgentEvents</text>
+          <text class="desc" x="346" y="148">createConfiguredAgent()</text>
+          <text class="desc" x="346" y="166">parent thread checkpoint</text>
+        </g>
+
+        <g class="node green">
+          <rect x="328" y="246" width="208" height="104"></rect>
+          <text class="title" x="346" y="274">Coordinator agent</text>
+          <text class="desc" x="346" y="300">system prompt 优先 task</text>
+          <text class="desc" x="346" y="318">仍保留 ask_* 兼容</text>
+          <text class="desc" x="346" y="336">write_todos 保持可用</text>
+        </g>
+
+        <g class="node violet">
+          <rect x="612" y="94" width="234" height="104"></rect>
+          <text class="title" x="630" y="122">createHarnessedAgent()</text>
+          <text class="desc" x="630" y="148">给 coordinator 注册 task</text>
+          <text class="desc" x="630" y="166">透传 model/runConfig/logger</text>
+          <text class="desc" x="630" y="184">createAgent({ name })</text>
+        </g>
+
+        <g class="node violet">
+          <rect x="612" y="246" width="234" height="110"></rect>
+          <text class="title" x="630" y="274">task 工具</text>
+          <text class="desc" x="630" y="300">agent: filesystem | memory | weather</text>
+          <text class="desc" x="630" y="318">task + context</text>
+          <text class="desc" x="630" y="336">生成 subtaskId / childThreadId</text>
+        </g>
+
+        <g class="node violet">
+          <rect x="612" y="420" width="234" height="104"></rect>
+          <text class="title" x="630" y="448">runSubagentTask()</text>
+          <text class="desc" x="630" y="474">消费子流，不转发 UI</text>
+          <text class="desc" x="630" y="492">收集 text / structured / tools</text>
+          <text class="desc" x="630" y="510">返回 final report envelope</text>
+        </g>
+
+        <g class="node amber">
+          <rect x="930" y="94" width="256" height="108"></rect>
+          <text class="title" x="948" y="122">只读子 agent 定义</text>
+          <text class="desc" x="948" y="148">getReadonlySubagentDefinition()</text>
+          <text class="desc" x="948" y="166">filesystem: list/read/search/glob</text>
+          <text class="desc" x="948" y="184">memory: list_memories</text>
+        </g>
+
+        <g class="node amber">
+          <rect x="930" y="246" width="256" height="110"></rect>
+          <text class="title" x="948" y="274">Child LangChain agent</text>
+          <text class="desc" x="948" y="300">复用 streamConfiguredAgentEvents</text>
+          <text class="desc" x="948" y="318">threadId = childThreadId</text>
+          <text class="desc" x="948" y="336">runName = subagent:&lt;agent&gt;</text>
+        </g>
+
+        <g class="node amber">
+          <rect x="930" y="420" width="256" height="116"></rect>
+          <text class="title" x="948" y="448">隔离存储与工具</text>
+          <text class="desc" x="948" y="474">LangGraph checkpoint</text>
+          <text class="desc" x="948" y="492">thread sandbox / memory-store</text>
+          <text class="desc" x="948" y="510">不暴露 mutation tools</text>
+          <text class="desc" x="948" y="528">不新增数据库表</text>
+        </g>
+
+        <g class="node green">
+          <rect x="328" y="542" width="208" height="86"></rect>
+          <text class="title" x="346" y="570">父 agent 汇总</text>
+          <text class="desc" x="346" y="596">task result 作为工具结果</text>
+          <text class="desc" x="346" y="614">最终回答用户</text>
+        </g>
+
+        <g class="node blue">
+          <rect x="44" y="542" width="208" height="86"></rect>
+          <text class="title" x="62" y="570">前端展示</text>
+          <text class="desc" x="62" y="596">只看到 parent task tool_call</text>
+          <text class="desc" x="62" y="614">M7 再做 subagent_start/end</text>
+        </g>
+
+        <path class="edge blue" d="M148 180 C148 206 148 220 148 246"></path>
+        <text class="edge-label" x="162" y="222">POST SSE</text>
+
+        <path class="edge blue" d="M252 290 C282 290 292 140 328 140"></path>
+        <text class="edge-label" x="238" y="206">resolve coordinator</text>
+
+        <path class="edge green" d="M536 140 C566 140 578 146 612 146"></path>
+        <text class="edge-label" x="548" y="128">配置 harness</text>
+
+        <path class="edge green" d="M432 186 C432 212 432 224 432 246"></path>
+        <text class="edge-label" x="446" y="224">agent invokes tool</text>
+
+        <path class="edge green" d="M536 300 C566 300 578 300 612 300"></path>
+        <text class="edge-label" x="548" y="286">task(args)</text>
+
+        <path class="edge amber" d="M729 356 C729 386 729 396 729 420"></path>
+        <text class="edge-label" x="744" y="392">delegate</text>
+
+        <path class="edge amber" d="M846 146 C876 146 890 148 930 148"></path>
+        <text class="edge-label" x="862" y="132">选择只读定义</text>
+
+        <path class="edge amber" d="M846 300 C876 300 890 300 930 300"></path>
+        <text class="edge-label" x="862" y="286">启动 child agent</text>
+
+        <path class="edge amber" d="M1058 356 C1058 386 1058 396 1058 420"></path>
+        <text class="edge-label" x="1072" y="392">tool calls</text>
+
+        <path class="edge green" d="M930 478 C880 478 872 478 846 478"></path>
+        <text class="edge-label" x="858" y="464">child events</text>
+
+        <path class="edge green" d="M612 472 C570 472 566 585 536 585"></path>
+        <text class="edge-label" x="548" y="540">final envelope</text>
+
+        <path class="edge blue" d="M328 585 C292 585 282 585 252 585"></path>
+        <text class="edge-label" x="264" y="570">SSE text/tool_call</text>
+
+        <g class="seq">
+          <circle cx="232" cy="112" r="13"></circle>
+          <text x="232" y="112">1</text>
+        </g>
+        <g class="seq">
+          <circle cx="232" cy="264" r="13"></circle>
+          <text x="232" y="264">2</text>
+        </g>
+        <g class="seq">
+          <circle cx="516" cy="112" r="13"></circle>
+          <text x="516" y="112">3</text>
+        </g>
+        <g class="seq">
+          <circle cx="826" cy="112" r="13"></circle>
+          <text x="826" y="112">4</text>
+        </g>
+        <g class="seq">
+          <circle cx="516" cy="264" r="13"></circle>
+          <text x="516" y="264">5</text>
+        </g>
+        <g class="seq">
+          <circle cx="826" cy="264" r="13"></circle>
+          <text x="826" y="264">6</text>
+        </g>
+        <g class="seq">
+          <circle cx="826" cy="438" r="13"></circle>
+          <text x="826" y="438">7</text>
+        </g>
+        <g class="seq">
+          <circle cx="1166" cy="112" r="13"></circle>
+          <text x="1166" y="112">8</text>
+        </g>
+        <g class="seq">
+          <circle cx="1166" cy="264" r="13"></circle>
+          <text x="1166" y="264">9</text>
+        </g>
+        <g class="seq">
+          <circle cx="1166" cy="438" r="13"></circle>
+          <text x="1166" y="438">10</text>
+        </g>
+        <g class="seq">
+          <circle cx="516" cy="560" r="13"></circle>
+          <text x="516" y="560">11</text>
+        </g>
+        <g class="seq">
+          <circle cx="232" cy="560" r="13"></circle>
+          <text x="232" y="560">12</text>
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <h2>顺序说明</h2>
+  <section class="panel">
+    <table>
+      <thead>
+        <tr>
+          <th>顺序</th>
+          <th>节点</th>
+          <th>数据流动作</th>
+          <th>关键数据</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="order-dot">1</span></td>
+          <td>用户发送复合任务</td>
+          <td>assistant-ui 发起一次 coordinator 对话请求。</td>
+          <td><code>threadId</code>、<code>agent=coordinator</code>、用户消息。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">2</span></td>
+          <td>Chat API</td>
+          <td>API 校验租户访问，并解析当前 tenant/user/thread scope。</td>
+          <td><code>tenantHashId</code>、<code>userHashId</code>、<code>threadId</code>。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">3</span></td>
+          <td>Parent runner</td>
+          <td><code>streamConfiguredAgentEvents()</code> 创建父 agent 调用，并接入父线程 checkpoint。</td>
+          <td>父 agent 的 <code>agentThreadId</code> 与原始用户消息。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">4</span></td>
+          <td>Harness 配置</td>
+          <td><code>createHarnessedAgent()</code> 给 coordinator 注册 <code>task</code>，同时透传运行态。</td>
+          <td><code>apiKey</code>、<code>modelName</code>、<code>runConfig</code>、<code>runLogger</code>。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">5</span></td>
+          <td>Coordinator agent</td>
+          <td>coordinator 根据 prompt 把复合任务拆给 <code>task</code>。</td>
+          <td>子任务目标和要选用的 subagent。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">6</span></td>
+          <td><code>task</code> 工具</td>
+          <td>校验白名单和上下文，生成子任务隔离 id。</td>
+          <td><code>subtaskId</code>、<code>childThreadId</code>、<code>task</code>、<code>context</code>。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">7</span></td>
+          <td><code>runSubagentTask()</code></td>
+          <td>启动子 agent runner，并消费子 agent 的内部事件流。</td>
+          <td>子 agent runConfig、child signal、final report accumulator。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">8</span></td>
+          <td>只读子 agent 定义</td>
+          <td>按 <code>agent</code> 选择只读定义，确保子 agent 不拿 mutation tools。</td>
+          <td><code>filesystem</code>、<code>memory</code>、<code>weather</code> 白名单定义。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">9</span></td>
+          <td>Child LangChain agent</td>
+          <td>复用现有 runner 执行子任务，子线程独立 checkpoint。</td>
+          <td><code>threadId = childThreadId</code>、<code>runName=subagent:&lt;agent&gt;</code>。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">10</span></td>
+          <td>隔离存储与工具</td>
+          <td>子 agent 只调用只读工具，访问当前线程 sandbox、memory-store 或天气服务。</td>
+          <td>工具结果、LangGraph checkpoint、thread sandbox。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">11</span></td>
+          <td>父 agent 汇总</td>
+          <td><code>runSubagentTask()</code> 把子流压缩成 envelope，父 agent 把它当作 <code>task</code> 工具结果汇总。</td>
+          <td><code>ok</code>、<code>summary</code>、<code>toolResults</code>、<code>childThreadId</code>。</td>
+        </tr>
+        <tr>
+          <td><span class="order-dot">12</span></td>
+          <td>前端展示</td>
+          <td>页面只展示父 agent 的 <code>task</code> tool_call 和最终回答。</td>
+          <td>SSE <code>tool_call</code>、<code>text_delta</code>、<code>structured_response</code>。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <h2>关键数据形态</h2>
+  <div class="grid cols-3">
+    <div class="card">
+      <h3>输入到 <code>task</code></h3>
+      <ul>
+        <li><code>agent</code>：只能是 <code>filesystem</code>、<code>memory</code>、<code>weather</code>。</li>
+        <li><code>task</code>：单个子任务指令。</li>
+        <li><code>context</code>：可选补充上下文，不继承父上下文全文。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>子任务隔离键</h3>
+      <ul>
+        <li><code>childThreadId = parentThreadId:subtask:subtaskId:agent</code></li>
+        <li>LangGraph 继续拼成 <code>agent:tenant:user:childThreadId</code>。</li>
+        <li>tenant/user/thread 三层隔离沿用原 runner。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>返回给父 agent</h3>
+      <ul>
+        <li><code>ok</code>、<code>subtaskId</code>、<code>agent</code>、<code>childThreadId</code></li>
+        <li><code>summary</code> 是父 agent 的主要依据。</li>
+        <li><code>toolResults</code> 只保留摘要，不回填子 agent 全量消息。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>能力边界矩阵</h2>
+  <section class="panel">
+    <table>
+      <thead>
+        <tr>
+          <th>子 agent</th>
+          <th>允许工具</th>
+          <th>禁止工具</th>
+          <th>原因</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>filesystem</code></td>
+          <td><span class="ok">允许</span> <code>list_filesystem_directory</code>、<code>read_filesystem_file</code>、<code>search_filesystem_text</code>、<code>glob_files</code></td>
+          <td><span class="blocked">禁止</span> <code>write_file</code>、<code>edit_file</code>、<code>delete_file</code></td>
+          <td>避免嵌套 approval，文件写改删仍只能由顶层 agent 触发现有确认流。</td>
+        </tr>
+        <tr>
+          <td><code>memory</code></td>
+          <td><span class="ok">允许</span> <code>list_memories</code></td>
+          <td><span class="blocked">禁止</span> <code>save_memory</code>、<code>delete_memory</code></td>
+          <td>子 agent 只查询长期记忆，不修改 memory-store。</td>
+        </tr>
+        <tr>
+          <td><code>weather</code></td>
+          <td><span class="ok">允许</span> <code>get_weather</code></td>
+          <td>无 mutation 工具</td>
+          <td>天气查询是无状态只读任务。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <h2>代码路径映射</h2>
+  <div class="grid cols-2">
+    <div class="card">
+      <h3>父流程</h3>
+      <ul>
+        <li><code>src/app/api/tenants/[tenantId]/chat/route.ts</code>：接收请求、解析 tenant/user/thread。</li>
+        <li><code>src/lib/agent/core/agent-runner.ts</code>：创建 parent agent，收集 SSE 事件。</li>
+        <li><code>src/lib/agent/harness/agent-harness.ts</code>：只给 coordinator 注册 <code>task</code>。</li>
+        <li><code>src/lib/agent/definitions/coordinator.ts</code>：prompt 约束优先使用 <code>task</code>。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>子流程</h3>
+      <ul>
+        <li><code>src/lib/agent/harness/subagents/task-tool.ts</code>：校验参数、生成 <code>childThreadId</code>。</li>
+        <li><code>src/lib/agent/core/agent-runner.ts</code>：<code>runSubagentTask()</code> 启动 child agent。</li>
+        <li><code>src/lib/agent/harness/subagents/readonly-definitions.ts</code>：定义只读子 agent 工具集。</li>
+        <li><code>src/lib/tools/filesystem-tool.ts</code>、<code>src/lib/tools/memory-tool.ts</code>：拆出 read-only tool factories。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>事件与上下文边界</h2>
+  <div class="callout">
+    M4 v1 不新增 <code>subagent_start</code> 或 <code>subagent_end</code> SSE。
+    前端仍只展示父 agent 的 <code>task</code> 工具调用；子 agent 内部的工具调用由 <code>runSubagentTask()</code> 消费并压缩成摘要。
+    这保证主上下文不会被子 agent 的完整消息流和长工具结果污染，M7 Streaming v2 再扩展专门的 subagent 可视化事件。
+  </div>
+</main>
+</body>
+</html>
