@@ -193,9 +193,9 @@ export function ChatWorkspace({
   tenantHashId,
 }: ChatWorkspaceProps) {
   return (
-    <main className="flex min-h-screen flex-col bg-white text-[#121212]">
+    <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-white text-[#121212]">
       <section className="flex min-h-0 flex-1 p-3 sm:p-4">
-        <div className="flex min-h-[calc(100vh-96px)] w-full overflow-hidden rounded-[22px] border border-[#e6e6e6] bg-white shadow-[0_1px_10px_rgba(0,0,0,0.04)]">
+        <div className="flex min-h-0 flex-1 overflow-hidden rounded-[22px] border border-[#e6e6e6] bg-white shadow-[0_1px_10px_rgba(0,0,0,0.04)]">
           <ChatWorkspaceContent
             initialThreadId={initialThreadId}
             tenantHashId={tenantHashId}
@@ -447,7 +447,7 @@ function ChatWorkspaceContent({
 
   return (
     <>
-      <aside className="hidden w-[252px] shrink-0 flex-col border-r border-[#f0f0f0] bg-[#fcfcfc] p-4 md:flex">
+      <aside className="hidden min-h-0 w-[252px] shrink-0 flex-col border-r border-[#f0f0f0] bg-[#fcfcfc] p-4 md:flex">
         <div className="mb-8 flex items-center gap-3 px-2 pt-3">
           <Bot size={24} strokeWidth={2.4} />
           <span className="min-w-0">
@@ -476,7 +476,7 @@ function ChatWorkspaceContent({
           {threads.map((thread) => (
             <button
               key={thread.id}
-              className={`truncate rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+              className={`w-full min-w-0 shrink-0 truncate rounded-lg px-3 py-2 text-left text-sm transition-colors ${
                 thread.id === activeThreadId
                   ? "bg-[#eeeeee] font-medium text-[#121212]"
                   : "text-[#2b2b2b] hover:bg-[#f4f4f4]"
@@ -490,7 +490,7 @@ function ChatWorkspaceContent({
         </div>
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col bg-white">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-white">
         <div className="flex h-[60px] shrink-0 items-center justify-between px-5 sm:px-8">
           <div className="flex min-w-0 items-center gap-4">
             <button
