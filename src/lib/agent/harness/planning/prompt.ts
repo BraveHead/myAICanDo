@@ -1,12 +1,5 @@
 import type { TodoState } from "./types";
 
-export function appendPlanningPromptContext(
-  systemPrompt: string,
-  todoState: TodoState | null | undefined,
-) {
-  return `${systemPrompt}\n\n${buildPlanningPromptContext(todoState)}`;
-}
-
 export function buildPlanningPromptContext(
   todoState: TodoState | null | undefined,
 ) {

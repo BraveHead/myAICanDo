@@ -1,26 +1,17 @@
 import "server-only";
 
-import { randomBytes } from "node:crypto";
 import { getPostgresPool, hasDatabaseUrl } from "../postgres";
 import type { SaasTenantRow, SaasUserRow, TenantStatus } from "./types";
 
 let setupPromise: Promise<void> | null = null;
 
-export async function ensureSaasStore() {
+async function ensureSaasStore() {
   if (!hasDatabaseUrl()) {
     throw new Error("未配置 DATABASE_URL，无法使用 SaaS 租户和登录能力。");
   }
 
   setupPromise ??= setupSaasTables();
   await setupPromise;
-}
-
-export async function createTenantHashId(prefix = "tenant") {
-  return createUniqueHashId(prefix, "public.saas_tenants");
-}
-
-export async function createUserHashId(prefix = "user") {
-  return createUniqueHashId(prefix, "public.saas_users");
 }
 
 export async function findUserByAccount(account: string) {
@@ -162,24 +153,6 @@ async function setupSaasTables() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-}
-
-async function createUniqueHashId(prefix: string, tableName: string) {
-  await ensureSaasStore();
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const hashId = `${prefix}_${randomBytes(12).toString("base64url")}`;
-    const result = await getPostgresPool().query(
-      `SELECT 1 FROM ${tableName} WHERE hash_id = $1 LIMIT 1`,
-      [hashId],
-    );
-
-    if (result.rowCount === 0) {
-      return hashId;
-    }
-  }
-
-  throw new Error("生成业务 hashId 失败，请重试。");
 }
 
 export function isAccessibleTenantStatus(status: TenantStatus) {

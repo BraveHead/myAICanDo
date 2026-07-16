@@ -47,7 +47,7 @@ const LOG_LEVELS = new Set([
 
 let appLogger: Logger | null = null;
 
-export function getLogger() {
+function getLogger() {
   if (!appLogger) {
     const fileConfig = getLogFileConfig();
     const fileDestinations = createLogFileDestinations(fileConfig);
@@ -79,7 +79,7 @@ export function createRequestLogger(baseFields: LogContext) {
   return getLogger().child(compactLogContext(baseFields));
 }
 
-export function compactLogContext(context: LogContext) {
+function compactLogContext(context: LogContext) {
   return Object.fromEntries(
     Object.entries(context).filter(([, value]) => value !== undefined),
   );

@@ -51,7 +51,7 @@ export function hasPendingActionStore() {
   return hasDatabaseUrl();
 }
 
-export async function ensurePendingActionStore() {
+async function ensurePendingActionStore() {
   if (!hasDatabaseUrl()) {
     return;
   }
@@ -267,7 +267,7 @@ export async function markPendingActionRejected(
   });
 }
 
-export async function getPendingAction(
+async function getPendingAction(
   scope: PendingActionScope,
   {
     actionId,

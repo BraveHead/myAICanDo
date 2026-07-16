@@ -5,8 +5,4 @@ export {
   createReadonlyFilesystemTools,
 } from "./filesystem-tool";
 export { getWeatherTool } from "./get-weather-tool";
-export {
-  createMemoryMutationTools,
-  createMemoryReadTools,
-  createMemoryTools,
-} from "./memory-tool";
+export { createMemoryReadTools, createMemoryTools } from "./memory-tool";

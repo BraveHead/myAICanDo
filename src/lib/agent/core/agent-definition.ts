@@ -14,7 +14,7 @@ export type AgentMessage = {
   content: string;
 };
 
-export type AgentTool = ClientTool | ServerTool;
+type AgentTool = ClientTool | ServerTool;
 
 export type AgentToolContext = {
   apiKey?: string;
@@ -30,7 +30,7 @@ export type AgentToolContext = {
   threadScope?: ThreadScope;
 };
 
-export type AgentTools =
+type AgentTools =
   | AgentTool[]
   | ((context: AgentToolContext) => AgentTool[]);
 

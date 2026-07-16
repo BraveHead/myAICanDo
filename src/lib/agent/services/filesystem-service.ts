@@ -20,12 +20,12 @@ type ResolvedSandboxPath =
       ok: false;
     };
 
-export type FilesystemServiceError = {
+type FilesystemServiceError = {
   code: string;
   message: string;
 };
 
-export type FilesystemDirectoryEntry = {
+type FilesystemDirectoryEntry = {
   name: string;
   path: string;
   sizeBytes?: number;
@@ -39,19 +39,19 @@ type FilesystemDirectoryEntryType =
   | "other"
   | "symlink";
 
-export type FilesystemSearchMatch = {
+type FilesystemSearchMatch = {
   line: string;
   lineNumber: number;
   path: string;
 };
 
-export type FilesystemFileMatch = {
+type FilesystemFileMatch = {
   path: string;
   sizeBytes: number;
   updatedAt: string;
 };
 
-export type FilesystemWriteOperation = "create" | "overwrite";
+type FilesystemWriteOperation = "create" | "overwrite";
 
 export type FilesystemApprovalPreview =
   | {
@@ -193,7 +193,7 @@ export type WriteInternalFilesystemArtifactResult =
     }
   | FilesystemServiceErrorResult;
 
-export type FilesystemServiceErrorResult = {
+type FilesystemServiceErrorResult = {
   error: FilesystemServiceError;
   ok: false;
   summary: string;

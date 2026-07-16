@@ -20,7 +20,7 @@ const agentDefinitions: Record<SupportedAgent, AgentDefinition> = {
   demo: demoAgentDefinition,
 };
 
-export function getAgentDefinition(agent: unknown) {
+function getAgentDefinition(agent: unknown) {
   if (!isSupportedAgent(agent)) {
     return undefined;
   }

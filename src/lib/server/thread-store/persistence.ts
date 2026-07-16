@@ -25,7 +25,7 @@ type ThreadInput = {
 
 let setupPromise: Promise<void> | null = null;
 
-export async function ensureThreadStore() {
+async function ensureThreadStore() {
   if (!hasDatabaseUrl()) {
     return;
   }

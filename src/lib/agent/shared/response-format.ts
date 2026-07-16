@@ -1,7 +1,7 @@
 import { toolStrategy } from "langchain";
 import * as z from "zod";
 
-export const structuredAgentResponseSchema = z.object({
+const structuredAgentResponseSchema = z.object({
   answer: z.string().describe("最终展示给用户的自然语言回答。"),
   confidence: z
     .number()

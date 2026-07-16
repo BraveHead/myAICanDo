@@ -4,7 +4,7 @@ export const TODO_STATUSES = [
   "completed",
 ] as const;
 
-export type TodoStatus = (typeof TODO_STATUSES)[number];
+type TodoStatus = (typeof TODO_STATUSES)[number];
 
 export type TodoItem = {
   content: string;

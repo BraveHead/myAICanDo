@@ -25,7 +25,7 @@ const taskToolSchema = z.object({
     .describe("Optional extra context for the subagent."),
 });
 
-export type TaskToolInput = z.infer<typeof taskToolSchema>;
+type TaskToolInput = z.infer<typeof taskToolSchema>;
 
 export function createSubagentTools(context: AgentToolContext) {
   if (context.runSubagent === undefined) {

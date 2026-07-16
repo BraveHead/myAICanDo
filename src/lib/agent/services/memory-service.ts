@@ -3,12 +3,9 @@ import {
   extractMemoryByRules,
   hasMemoryStore,
   listMemories,
-  previewSaveMemory,
-  restoreMemory,
   saveMemory,
   type MemoryKey,
   type MemoryListStatus,
-  type MemorySavePreview,
   type MemoryScope,
   type StoredMemory,
 } from "@/lib/server/memory-store";
@@ -18,7 +15,7 @@ export type MemoryServiceContext = {
   threadScope?: MemoryScope;
 };
 
-export type MemoryServiceError = {
+type MemoryServiceError = {
   code: string;
   message: string;
 };
@@ -51,24 +48,7 @@ export type DeleteUserMemoryResult =
     }
   | MemoryServiceErrorResult;
 
-export type RestoreUserMemoryResult =
-  | {
-      memory: StoredMemory;
-      ok: true;
-      restored: true;
-      summary: string;
-    }
-  | MemoryServiceErrorResult;
-
-export type PreviewSaveUserMemoryResult =
-  | {
-      ok: true;
-      preview: MemorySavePreview;
-      summary: string;
-    }
-  | MemoryServiceErrorResult;
-
-export type MemoryServiceErrorResult = {
+type MemoryServiceErrorResult = {
   error: MemoryServiceError;
   ok: false;
   summary: string;
@@ -195,76 +175,6 @@ export async function deleteUserMemory(
   };
 }
 
-export async function restoreUserMemory(
-  context: MemoryServiceContext,
-  memoryId: string,
-): Promise<RestoreUserMemoryResult> {
-  const scope = getMemoryScope(context);
-  if (!scope) {
-    return createMissingContextError();
-  }
-
-  if (!hasMemoryStore()) {
-    return createMemoryStoreUnavailableError();
-  }
-
-  const memory = await restoreMemory(scope, memoryId);
-  if (!memory) {
-    return createMemoryError(
-      "memory_not_found",
-      "No memory with this id exists for the current tenant and user.",
-    );
-  }
-
-  return {
-    ok: true,
-    restored: true,
-    memory,
-    summary: `已恢复记忆 ${memory.memoryId}：${memory.content}`,
-  };
-}
-
-export async function previewSaveUserMemory(
-  context: MemoryServiceContext,
-  {
-    category = "general",
-    content,
-  }: {
-    category?: string;
-    content: string;
-  },
-): Promise<PreviewSaveUserMemoryResult> {
-  const scope = getMemoryScope(context);
-  if (!scope) {
-    return createMissingContextError();
-  }
-
-  if (!hasMemoryStore()) {
-    return createMemoryStoreUnavailableError();
-  }
-
-  const normalizedContent = content.trim();
-  if (!normalizedContent) {
-    return createMemoryError("invalid_content", "Memory content cannot be empty.");
-  }
-
-  const preview = await previewSaveMemory(scope, {
-    category: normalizeCategory(category),
-    content: normalizedContent,
-  });
-  if (!preview) {
-    return createMemoryStoreUnavailableError();
-  }
-
-  return {
-    ok: true,
-    preview,
-    summary: preview.willReplace && preview.replacedMemory
-      ? `这条记忆会覆盖 ${preview.memoryKey}：${formatMemoryValue(preview.replacedValue)} -> ${formatMemoryValue(preview.newValue)}`
-      : `这条记忆会保存为 ${preview.memoryKey}${preview.newValue ? `=${preview.newValue}` : ""}。`,
-  };
-}
-
 function getMemoryScope(context: MemoryServiceContext) {
   if (!context.threadScope) {
     return null;
@@ -315,10 +225,6 @@ function formatMemoryKeyValue(memory: StoredMemory) {
   return memory.extraction?.value
     ? `${memory.memoryKey}=${memory.extraction.value}`
     : memory.memoryKey;
-}
-
-function formatMemoryValue(value: string | null) {
-  return value ?? "未提取";
 }
 
 function createMissingContextError() {

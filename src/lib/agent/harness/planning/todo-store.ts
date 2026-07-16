@@ -145,7 +145,7 @@ export async function writeThreadTodoState(
   }
 }
 
-export function normalizeTodoInputs(
+function normalizeTodoInputs(
   todos: TodoInputItem[],
   previousTodos: TodoItem[] = [],
 ): TodoNormalizeResult {

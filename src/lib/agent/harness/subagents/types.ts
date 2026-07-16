@@ -13,7 +13,7 @@ export type SubagentToolResult = {
   toolName: string;
 };
 
-export type SubagentTaskError = {
+type SubagentTaskError = {
   code: string;
   message: string;
 };

@@ -21,11 +21,11 @@ export const MEMORY_KEYS = [
   "general",
 ] as const satisfies readonly MemoryKey[];
 
-export type MemoryStatus = "active" | "superseded" | "deleted";
+type MemoryStatus = "active" | "superseded" | "deleted";
 
 export type MemoryListStatus = MemoryStatus | "all";
 
-export type MemoryExtractionSource = "model" | "rule";
+type MemoryExtractionSource = "model" | "rule";
 
 export type MemoryExtraction = {
   category: string;
@@ -84,7 +84,7 @@ export function hasMemoryStore() {
   return hasDatabaseUrl();
 }
 
-export async function ensureMemoryStore() {
+async function ensureMemoryStore() {
   if (!hasDatabaseUrl()) {
     return;
   }
@@ -92,10 +92,6 @@ export async function ensureMemoryStore() {
   setupPromise ??= setupAssistantMemoriesTable();
 
   await setupPromise;
-}
-
-export function inferMemoryKey(category: string, content: string): MemoryKey {
-  return extractMemoryByRules(category, content).key;
 }
 
 export function extractMemoryByRules(
@@ -843,7 +839,7 @@ function rowToStoredMemory(row: MemoryRow): StoredMemory {
   };
 }
 
-export function normalizeMemoryKey(value: string): MemoryKey {
+function normalizeMemoryKey(value: string): MemoryKey {
   return MEMORY_KEYS.find((key) => key === value) ?? "general";
 }
 

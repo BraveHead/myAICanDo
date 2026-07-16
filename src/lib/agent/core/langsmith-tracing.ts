@@ -1,13 +1,13 @@
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { SupportedAgent } from "../shared/agent-ids";
 
-export const LANGSMITH_PROJECT_NAME = "my-ai-can-do";
-export const LANGSMITH_PROJECT_ID = "9bb59f56-9f40-4464-b334-df27bf57cc6c";
-export const LANGSMITH_ORGANIZATION_ID =
+const LANGSMITH_PROJECT_NAME = "my-ai-can-do";
+const LANGSMITH_PROJECT_ID = "9bb59f56-9f40-4464-b334-df27bf57cc6c";
+const LANGSMITH_ORGANIZATION_ID =
   "3b483e76-04e7-4d2c-98b4-ffa5ecb23e6e";
-export const LANGSMITH_WORKSPACE_ID = LANGSMITH_ORGANIZATION_ID;
-export const LANGSMITH_ENDPOINT = "https://api.smith.langchain.com";
-export const LANGSMITH_PROJECT_URL = `https://smith.langchain.com/o/${LANGSMITH_ORGANIZATION_ID}/projects/p/${LANGSMITH_PROJECT_ID}`;
+const LANGSMITH_WORKSPACE_ID = LANGSMITH_ORGANIZATION_ID;
+const LANGSMITH_ENDPOINT = "https://api.smith.langchain.com";
+const LANGSMITH_PROJECT_URL = `https://smith.langchain.com/o/${LANGSMITH_ORGANIZATION_ID}/projects/p/${LANGSMITH_PROJECT_ID}`;
 
 type CreateLangSmithRunConfigOptions = {
   agent?: SupportedAgent;
@@ -18,7 +18,7 @@ type CreateLangSmithRunConfigOptions = {
   userHashId?: string;
 };
 
-export function ensureLangSmithTracingEnv() {
+function ensureLangSmithTracingEnv() {
   if (!process.env.LANGSMITH_API_KEY) {
     return false;
   }

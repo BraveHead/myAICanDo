@@ -3,7 +3,7 @@ import * as z from "zod";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
 import { writeThreadTodoState } from "../planning/todo-store";
-import { TODO_STATUSES, type TodoInputItem } from "../planning/types";
+import { TODO_STATUSES } from "../planning/types";
 
 type PlanningToolContext = {
   agentId: string;
@@ -79,7 +79,3 @@ export function createPlanningTools(context: PlanningToolContext) {
 function jsonResult(value: unknown) {
   return JSON.stringify(value);
 }
-
-export type WriteTodosToolInput = {
-  todos: TodoInputItem[];
-};

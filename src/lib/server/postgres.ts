@@ -7,7 +7,7 @@ export function hasDatabaseUrl() {
   return Boolean(process.env.DATABASE_URL?.trim());
 }
 
-export function getDatabaseUrl() {
+function getDatabaseUrl() {
   const databaseUrl = process.env.DATABASE_URL?.trim();
   if (!databaseUrl) {
     logger.warn(

@@ -1,7 +1,7 @@
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
 import { writeInternalFilesystemArtifact } from "@/lib/agent/services/filesystem-service";
 
-export type ContextOffloadArtifact = {
+type ContextOffloadArtifact = {
   artifactPath: string;
   args: unknown;
   createdAt: string;

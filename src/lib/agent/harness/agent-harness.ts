@@ -18,7 +18,7 @@ import {
   type CreateProjectChatModelOptions,
 } from "../core/chat-model";
 
-export type AgentHarnessMiddlewareFactoryOptions = {
+type AgentHarnessMiddlewareFactoryOptions = {
   agentId: AgentDefinition["id"];
   contextPolicy?: ContextOffloadPolicy;
   onStreamEvent?: (event: ChatStreamEvent) => void;
@@ -27,11 +27,11 @@ export type AgentHarnessMiddlewareFactoryOptions = {
   threadScope?: ThreadScope;
 };
 
-export type AgentHarnessMiddlewareFactory = (
+type AgentHarnessMiddlewareFactory = (
   options: AgentHarnessMiddlewareFactoryOptions,
 ) => readonly AnyAgentMiddleware[];
 
-export type AgentHarnessConfig<
+type AgentHarnessConfig<
   TCheckpointer extends
     BaseCheckpointSaver | boolean = BaseCheckpointSaver | boolean,
 > = CreateConfiguredAgentOptions & {

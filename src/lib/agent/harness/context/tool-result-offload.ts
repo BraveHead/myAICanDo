@@ -7,7 +7,7 @@ export type ContextOffloadPolicy = {
   maxInlineResultBytes?: number;
 };
 
-export type ContextOffloadReference = {
+type ContextOffloadReference = {
   artifactPath: string;
   offloaded: true;
   originalSizeBytes: number;
@@ -24,7 +24,7 @@ export type ToolResultOffloadOptions = {
   toolName: string;
 };
 
-export type ToolResultOffloadResult =
+type ToolResultOffloadResult =
   | {
       artifactPath: string;
       offloaded: true;

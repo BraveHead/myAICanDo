@@ -2,14 +2,14 @@ import type { TodoState } from "@/lib/agent/harness/planning";
 import { buildPlanningPromptContext } from "@/lib/agent/harness/planning";
 import type { ContextOffloadPolicy } from "./tool-result-offload";
 
-export type PromptSectionKey =
+type PromptSectionKey =
   | "base"
   | "agent"
   | "memory"
   | "skills"
   | "tool-guidance";
 
-export type PromptBuildContext = {
+type PromptBuildContext = {
   agentPrompt: string;
   basePrompt?: string;
   memoryContext?: string;

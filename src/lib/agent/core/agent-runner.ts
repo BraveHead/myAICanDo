@@ -124,7 +124,7 @@ class ToolApprovalRequiredError extends Error {
   }
 }
 
-export async function createConfiguredAgent(
+async function createConfiguredAgent(
   definition: AgentDefinition,
   options: CreateConfiguredAgentOptions & {
     memoryContext?: string;
@@ -427,7 +427,7 @@ export async function* streamConfiguredAgentEvents({
   }
 }
 
-export async function runSubagentTask({
+async function runSubagentTask({
   agent,
   apiKey,
   baseURL,

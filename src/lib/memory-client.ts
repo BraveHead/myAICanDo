@@ -5,11 +5,11 @@ export type ClientMemoryKey =
   | "profile.nickname"
   | "general";
 
-export type ClientMemoryStatus = "active" | "superseded" | "deleted";
+type ClientMemoryStatus = "active" | "superseded" | "deleted";
 
 export type ClientMemoryListStatus = ClientMemoryStatus | "all";
 
-export type ClientMemoryExtraction = {
+type ClientMemoryExtraction = {
   category: string;
   confidence: number;
   key: ClientMemoryKey;
