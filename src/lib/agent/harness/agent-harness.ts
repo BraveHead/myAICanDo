@@ -6,6 +6,11 @@ import type { ChatStreamEvent } from "@/lib/chat-stream";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
 import { buildHarnessSystemPrompt, type ContextOffloadPolicy } from "./context";
 import type { TodoState } from "./planning";
+import {
+  createSkillTools,
+  formatSkillSummariesForPrompt,
+  listSkillsForAgent,
+} from "./skills";
 import { createSubagentTools, type RunSubagentTask } from "./subagents";
 import { createPlanningTools } from "./tools";
 import type {
@@ -83,6 +88,11 @@ export async function createHarnessedAgent<
   };
   const model = createProjectChatModel(modelOptions);
   const agentCheckpointer = await getCheckpointer();
+  const skillListResult = await listSkillsForAgent({
+    agentId: definition.id,
+  });
+  const skillSummaries = skillListResult.ok ? skillListResult.skills : [];
+  const skillsContext = formatSkillSummariesForPrompt(skillSummaries);
   const middleware = createMiddleware({
     agentId: definition.id,
     contextPolicy,
@@ -120,6 +130,10 @@ export async function createHarnessedAgent<
           threadScope,
         })
       : []),
+    ...createSkillTools({
+      agentId: definition.id,
+      runLogger,
+    }),
     ...(planningEnabled
       ? createPlanningTools({
           agentId: definition.id,
@@ -136,8 +150,10 @@ export async function createHarnessedAgent<
       hasContextPolicy: Boolean(contextPolicy),
       hasMemoryContext: Boolean(memoryContext),
       hasPlanningTools: planningEnabled,
+      hasSkillsContext: Boolean(skillsContext),
       hasResponseFormat: Boolean(definition.responseFormat),
       hasTodoState: Boolean(todoState?.todos.length),
+      skillCount: skillSummaries.length,
       toolCount: tools.length,
     },
     "agent configured",
@@ -152,6 +168,7 @@ export async function createHarnessedAgent<
       memoryContext,
       offloadPolicy: contextPolicy,
       planningEnabled,
+      skillsContext,
       todoState,
     }),
     checkpointer: agentCheckpointer,

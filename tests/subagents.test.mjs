@@ -167,7 +167,9 @@ describe("M4 subagents", () => {
     expect(getToolNames(agent.options.tools)).toEqual([
       "glob_files",
       "list_filesystem_directory",
+      "list_skills",
       "read_filesystem_file",
+      "read_skill",
       "search_filesystem_text",
     ]);
     expect(agent.options.systemPrompt).not.toContain("write_todos");

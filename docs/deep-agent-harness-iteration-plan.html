@@ -591,7 +591,7 @@
           </tr>
           <tr>
             <td><code>src/lib/agent/harness/skills/</code></td>
-            <td>扫描 <code>skills/*/SKILL.md</code>，先加载 frontmatter，再按需读取全文。</td>
+            <td>扫描 <code>agent-skills/*/SKILL.md</code>，先加载 frontmatter，再按需读取全文。</td>
           </tr>
         </tbody>
       </table>
@@ -737,6 +737,13 @@
                 <strong>验收</strong>
                 新增一个 filesystem 报告 skill 后，agent 能在相关任务中主动读取并按该流程执行。
               </div>
+            </div>
+            <div class="note">
+              <strong>M5 最终设计：</strong>
+              项目级 skill 放在 <code>agent-skills/&lt;skillId&gt;/SKILL.md</code>；
+              harness 启动时只把 <code>id/name/description/triggers</code> 摘要注入 <code>## skills</code>；
+              模型需要完整流程时调用只读 <code>read_skill</code>。
+              M5 不执行脚本、不新增 SSE 事件、不改变子 agent 的工具权限。
             </div>
           </div>
         </article>
