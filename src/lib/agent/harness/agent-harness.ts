@@ -6,6 +6,7 @@ import type { ChatStreamEvent } from "@/lib/chat-stream";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
 import { buildHarnessSystemPrompt, type ContextOffloadPolicy } from "./context";
 import type { TodoState } from "./planning";
+import type { MemoryManifest } from "./memory";
 import {
   createSkillTools,
   formatSkillSummariesForPrompt,
@@ -46,6 +47,7 @@ type AgentHarnessConfig<
   getCheckpointer: () => Promise<TCheckpointer>;
   getCheckpointerType: (checkpointer: TCheckpointer) => string;
   memoryContext?: string;
+  memoryManifest?: MemoryManifest;
   onStreamEvent?: (event: ChatStreamEvent) => void;
   planningEnabled?: boolean;
   runConfig?: RunnableConfig;
@@ -68,6 +70,7 @@ export async function createHarnessedAgent<
   getCheckpointer,
   getCheckpointerType,
   memoryContext,
+  memoryManifest,
   modelName,
   onStreamEvent,
   planningEnabled = true,
@@ -107,6 +110,7 @@ export async function createHarnessedAgent<
       baseURL,
       contextPolicy,
       modelName,
+      memoryManifest,
       onStreamEvent,
       runConfig,
       runLogger,
@@ -121,6 +125,7 @@ export async function createHarnessedAgent<
           baseURL,
           contextPolicy,
           modelName,
+          memoryManifest,
           onStreamEvent,
           runConfig,
           runLogger,
@@ -149,6 +154,13 @@ export async function createHarnessedAgent<
       checkpointer: getCheckpointerType(agentCheckpointer),
       hasContextPolicy: Boolean(contextPolicy),
       hasMemoryContext: Boolean(memoryContext),
+      memoryEntryCounts: memoryManifest
+        ? {
+            harness: 1,
+            project: memoryManifest.project.length,
+            user: memoryManifest.user.length,
+          }
+        : undefined,
       hasPlanningTools: planningEnabled,
       hasSkillsContext: Boolean(skillsContext),
       hasResponseFormat: Boolean(definition.responseFormat),
@@ -166,6 +178,7 @@ export async function createHarnessedAgent<
     systemPrompt: buildHarnessSystemPrompt({
       agentPrompt: definition.systemPrompt,
       memoryContext,
+      memoryManifest,
       offloadPolicy: contextPolicy,
       planningEnabled,
       skillsContext,

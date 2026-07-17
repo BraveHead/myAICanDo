@@ -30,7 +30,8 @@ type ApiMessage = {
 export function ChatRuntimeProvider({
   children,
   tenantHashId,
-}: PropsWithChildren<{ tenantHashId: string }>) {
+  workspaceId,
+}: PropsWithChildren<{ tenantHashId: string; workspaceId: string }>) {
   const adapter = useMemo<ChatModelAdapter>(
     () => ({
       async *run({
@@ -40,7 +41,8 @@ export function ChatRuntimeProvider({
         unstable_threadId,
         runConfig,
       }) {
-        const threadId = loadActiveThreadId(tenantHashId) ?? unstable_threadId;
+        const threadId =
+          loadActiveThreadId(tenantHashId, workspaceId) ?? unstable_threadId;
         const approvalDecisions = getApprovalDecisions(unstable_getMessage());
         if (approvalDecisions.length > 0) {
           if (!threadId) {
@@ -52,6 +54,7 @@ export function ChatRuntimeProvider({
             approvalDecisions,
             tenantHashId,
             threadId,
+            workspaceId,
           });
           return;
         }
@@ -78,6 +81,7 @@ export function ChatRuntimeProvider({
                   : undefined,
               agent: getSupportedAgent(runConfig.custom?.agent),
               threadId,
+              workspaceId,
             }),
             signal: abortSignal,
           },
@@ -132,7 +136,7 @@ export function ChatRuntimeProvider({
         }
       },
     }),
-    [tenantHashId],
+    [tenantHashId, workspaceId],
   );
   const runtime = useLocalRuntime(adapter, {
     unstable_humanToolNames: [...APPROVAL_GATED_TOOL_NAMES],
@@ -183,11 +187,13 @@ async function* runApprovalExecutions({
   approvalDecisions,
   tenantHashId,
   threadId,
+  workspaceId,
 }: {
   abortSignal: AbortSignal;
   approvalDecisions: ApprovalDecision[];
   tenantHashId: string;
   threadId: string;
+  workspaceId: string;
 }) {
   const responses: ApprovalExecutionResponse[] = [];
   for (const approvalDecision of approvalDecisions) {
@@ -197,6 +203,7 @@ async function* runApprovalExecutions({
         approvalDecision,
         tenantHashId,
         threadId,
+        workspaceId,
       }),
     );
   }
@@ -222,11 +229,13 @@ async function executeApprovalDecision({
   approvalDecision,
   tenantHashId,
   threadId,
+  workspaceId,
 }: {
   abortSignal: AbortSignal;
   approvalDecision: ApprovalDecision;
   tenantHashId: string;
   threadId: string;
+  workspaceId: string;
 }) {
   const response = await fetch(
     `/api/tenants/${encodeURIComponent(tenantHashId)}/chat/approvals`,
@@ -240,6 +249,7 @@ async function executeApprovalDecision({
         approved: approvalDecision.approved,
         reason: approvalDecision.reason,
         threadId,
+        workspaceId,
       }),
       signal: abortSignal,
     },

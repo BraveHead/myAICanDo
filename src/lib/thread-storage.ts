@@ -18,11 +18,17 @@ export function createTransientThread({
   return createClientThread(title, threadId);
 }
 
-export async function loadThreadsFromServer(tenantHashId: string) {
+export async function loadThreadsFromServer(
+  tenantHashId: string,
+  workspaceId: string,
+) {
   try {
-    const response = await fetch(getTenantApiPath(tenantHashId, "/threads"), {
-      cache: "no-store",
-    });
+    const response = await fetch(
+      getTenantApiPath(tenantHashId, `/threads?workspaceId=${encodeURIComponent(workspaceId)}`),
+      {
+        cache: "no-store",
+      },
+    );
     if (!response.ok) {
       return [];
     }
@@ -34,24 +40,29 @@ export async function loadThreadsFromServer(tenantHashId: string) {
   }
 }
 
-export function loadActiveThreadId(tenantHashId: string) {
-  return activeThreadIds.get(tenantHashId) ?? null;
+export function loadActiveThreadId(tenantHashId: string, workspaceId: string) {
+  return activeThreadIds.get(createScopeKey(tenantHashId, workspaceId)) ?? null;
 }
 
 export function saveActiveThreadId(
   tenantHashId: string,
+  workspaceId: string,
   threadId: string | null,
 ) {
-  activeThreadIds.set(tenantHashId, threadId);
+  activeThreadIds.set(createScopeKey(tenantHashId, workspaceId), threadId);
 }
 
 export async function loadRepositoryFromServer(
   tenantHashId: string,
+  workspaceId: string,
   threadId: string,
 ) {
   try {
     const response = await fetch(
-      getTenantApiPath(tenantHashId, `/threads/${encodeURIComponent(threadId)}`),
+      getTenantApiPath(
+        tenantHashId,
+        `/threads/${encodeURIComponent(threadId)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+      ),
       {
         cache: "no-store",
       },
@@ -72,10 +83,12 @@ export async function loadRepositoryFromServer(
 export async function saveRepositoryToServer({
   repository,
   tenantHashId,
+  workspaceId,
   threadId,
 }: {
   repository: ExportedMessageRepository;
   tenantHashId: string;
+  workspaceId: string;
   threadId: string;
 }) {
   const response = await fetch(
@@ -87,6 +100,7 @@ export async function saveRepositoryToServer({
       },
       body: JSON.stringify({
         repository,
+        workspaceId,
       }),
     },
   );
@@ -148,4 +162,8 @@ function createId() {
 
 function getTenantApiPath(tenantHashId: string, path: string) {
   return `/api/tenants/${encodeURIComponent(tenantHashId)}${path}`;
+}
+
+function createScopeKey(tenantHashId: string, workspaceId: string) {
+  return `${tenantHashId}:${workspaceId}`;
 }

@@ -2,10 +2,12 @@ import {
   createStoredThread,
   listStoredThreads,
 } from "@/lib/server/thread-store";
-import { authErrorResponse, requireTenantAccess } from "@/lib/server/saas";
+import { authErrorResponse } from "@/lib/server/saas";
+import { requireWorkspaceAccess } from "@/lib/server/workspace-context";
 
 type ThreadsRequestBody = {
   title?: string;
+  workspaceId?: string;
 };
 
 type ThreadsRouteContext = {
@@ -17,8 +19,9 @@ type ThreadsRouteContext = {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: Request, context: ThreadsRouteContext) {
-  const access = await getRouteAccess(context);
+export async function GET(request: Request, context: ThreadsRouteContext) {
+  const workspaceId = new URL(request.url).searchParams.get("workspaceId") ?? undefined;
+  const access = await getRouteAccess(context, workspaceId);
   if (access instanceof Response) {
     return access;
   }
@@ -29,17 +32,10 @@ export async function GET(_request: Request, context: ThreadsRouteContext) {
 }
 
 export async function POST(request: Request, context: ThreadsRouteContext) {
-  const access = await getRouteAccess(context);
+  const body = await readBody(request);
+  const access = await getRouteAccess(context, body.workspaceId);
   if (access instanceof Response) {
     return access;
-  }
-
-  let body: ThreadsRequestBody = {};
-
-  try {
-    body = (await request.json()) as ThreadsRequestBody;
-  } catch {
-    body = {};
   }
 
   return Response.json({
@@ -47,10 +43,10 @@ export async function POST(request: Request, context: ThreadsRouteContext) {
   });
 }
 
-async function getRouteAccess(context: ThreadsRouteContext) {
+async function getRouteAccess(context: ThreadsRouteContext, workspaceId?: string) {
   const { tenantId } = await context.params;
   try {
-    return await requireTenantAccess(tenantId);
+    return await requireWorkspaceAccess(tenantId, workspaceId);
   } catch (error) {
     return authErrorResponse(error);
   }
@@ -65,9 +61,22 @@ function normalizeTitle(title: unknown) {
   return normalizedTitle || "New Chat";
 }
 
-function toThreadScope(access: { tenantHashId: string; userHashId: string }) {
+function toThreadScope(access: {
+  tenantHashId: string;
+  userHashId: string;
+  workspace: { workspaceId: string };
+}) {
   return {
     tenantHashId: access.tenantHashId,
     userHashId: access.userHashId,
+    workspaceId: access.workspace.workspaceId,
   };
+}
+
+async function readBody(request: Request): Promise<ThreadsRequestBody> {
+  try {
+    return (await request.json()) as ThreadsRequestBody;
+  } catch {
+    return {};
+  }
 }

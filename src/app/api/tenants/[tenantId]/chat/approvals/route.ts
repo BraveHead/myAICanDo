@@ -20,6 +20,8 @@ import {
 } from "@/lib/agent/services/filesystem-service";
 import { isSupportedAgent } from "@/lib/agent/shared/agent-ids";
 import { authErrorResponse, requireTenantAccess } from "@/lib/server/saas";
+import { requireWorkspaceAccess } from "@/lib/server/workspace-context";
+import { getStoredThreadWorkspaceId } from "@/lib/server/thread-store/persistence";
 import {
   decidePendingAction,
   hasPendingActionStore,
@@ -36,6 +38,7 @@ type ApprovalRequestBody = {
   approved?: boolean;
   reason?: string;
   threadId?: string;
+  workspaceId?: string;
 };
 
 type ApprovalRouteContext = {
@@ -119,9 +122,52 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
     );
   }
 
+  const storedWorkspaceId = await getStoredThreadWorkspaceId(access, threadId);
+  if (!storedWorkspaceId) {
+    return Response.json(
+      {
+        error: {
+          code: "thread_not_found",
+          message: "线程不存在或未绑定工作区。",
+        },
+      },
+      { status: 404 },
+    );
+  }
+
+  if (
+    body.workspaceId &&
+    body.workspaceId !== storedWorkspaceId
+  ) {
+    return Response.json(
+      {
+        error: {
+          code: "thread_workspace_mismatch",
+          message: "确认请求不能跨工作区执行。",
+        },
+      },
+      { status: 403 },
+    );
+  }
+
+  let workspaceAccess;
+  try {
+    workspaceAccess = await requireWorkspaceAccess(
+      tenantId,
+      body.workspaceId ?? storedWorkspaceId,
+    );
+  } catch (error) {
+    return authErrorResponse(error);
+  }
+
   const scope = {
     tenantHashId: access.tenantHashId,
     userHashId: access.userHashId,
+  };
+  const threadScope = {
+    tenantHashId: workspaceAccess.tenantHashId,
+    userHashId: workspaceAccess.userHashId,
+    workspaceId: workspaceAccess.workspace.workspaceId,
   };
   const requestLogger = createRequestLogger({
     approvalId,
@@ -130,6 +176,7 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
     tenantHashId: access.tenantHashId,
     threadId,
     userHashId: access.userHashId,
+    workspaceId: workspaceAccess.workspace.workspaceId,
   });
 
   const action = await decidePendingAction(scope, {
@@ -168,7 +215,7 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
     await persistApprovalText({
       action,
       response: expiredResponse,
-      scope,
+      scope: threadScope,
       threadId,
     });
     requestLogger.warn("approval action expired");
@@ -200,7 +247,7 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
     await persistApprovalText({
       action,
       response,
-      scope,
+      scope: threadScope,
       threadId,
     });
     requestLogger.info(
@@ -227,6 +274,7 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
   const response = await executeApprovedAction(action, {
     tenantHashId: access.tenantHashId,
     userHashId: access.userHashId,
+    workspaceId: workspaceAccess.workspace.workspaceId,
   });
   if (response.ok) {
     await markPendingActionExecuted(scope, {
@@ -244,7 +292,7 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
   await persistApprovalText({
     action,
     response,
-    scope,
+    scope: threadScope,
     threadId,
   });
 
@@ -262,7 +310,7 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
 
 async function executeApprovedAction(
   action: StoredPendingAction,
-  threadScope: { tenantHashId: string; userHashId: string },
+  threadScope: { tenantHashId: string; userHashId: string; workspaceId: string },
 ): Promise<ApprovalExecutionResponse> {
   if (action.toolName === "save_memory") {
     const input = getSaveMemoryInput(action.args);
@@ -518,7 +566,7 @@ async function persistApprovalText({
 }: {
   action: StoredPendingAction;
   response: ApprovalExecutionResponse;
-  scope: { tenantHashId: string; userHashId: string };
+  scope: { tenantHashId: string; userHashId: string; workspaceId: string };
   threadId: string;
 }) {
   await appendThreadMessages({

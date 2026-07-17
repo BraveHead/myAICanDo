@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
 import type { ContextOffloadPolicy } from "../context";
+import type { MemoryManifest } from "../memory";
 
 export const SUBAGENT_IDS = ["filesystem", "memory", "weather"] as const;
 
@@ -45,6 +46,7 @@ export type RunSubagentTaskInput = {
   context?: string;
   contextPolicy?: ContextOffloadPolicy;
   modelName: string;
+  memoryManifest?: MemoryManifest;
   onStreamEvent?: (event: ChatStreamEvent) => void;
   parentAgentId: string;
   parentThreadId: string;

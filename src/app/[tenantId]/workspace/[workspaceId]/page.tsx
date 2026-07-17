@@ -4,15 +4,16 @@ import { requireWorkspaceAccess } from "@/lib/server/workspace-context";
 import { listStoredThreads } from "@/lib/server/thread-store";
 import { getThreadPath } from "@/lib/thread-routes";
 
-type TenantHomeProps = {
+type WorkspaceHomeProps = {
   params: Promise<{
     tenantId: string;
+    workspaceId: string;
   }>;
 };
 
-export default async function TenantHome({ params }: TenantHomeProps) {
-  const { tenantId } = await params;
-  const access = await requireWorkspaceAccess(tenantId);
+export default async function WorkspaceHome({ params }: WorkspaceHomeProps) {
+  const { tenantId, workspaceId } = await params;
+  const access = await requireWorkspaceAccess(tenantId, workspaceId);
   const scope = {
     tenantHashId: access.tenantHashId,
     userHashId: access.userHashId,

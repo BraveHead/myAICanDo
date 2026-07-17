@@ -18,6 +18,7 @@ const context = {
   threadScope: {
     tenantHashId: "tenant_1",
     userHashId: "user_1",
+    workspaceId: "ws_1",
   },
 };
 

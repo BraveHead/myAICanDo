@@ -8,6 +8,7 @@ import type { ContextOffloadPolicy } from "../harness/context";
 import type { RunSubagentTask } from "../harness/subagents";
 import type { CreateProjectChatModelOptions } from "./chat-model";
 import type { SupportedAgent } from "../shared/agent-ids";
+import type { MemoryManifest } from "../harness/memory";
 
 export type AgentMessage = {
   role: "system" | "user" | "assistant";
@@ -21,6 +22,7 @@ export type AgentToolContext = {
   baseURL?: string;
   contextPolicy?: ContextOffloadPolicy;
   modelName?: string;
+  memoryManifest?: MemoryManifest;
   onStreamEvent?: (event: ChatStreamEvent) => void;
   runConfig?: RunnableConfig;
   runLogger?: Logger;

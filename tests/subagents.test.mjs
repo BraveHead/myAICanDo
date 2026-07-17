@@ -17,6 +17,7 @@ const { createHarnessedAgent } = await import(
 const scope = {
   tenantHashId: "tenant_1",
   userHashId: "user_1",
+  workspaceId: "ws_1",
 };
 
 describe("M4 subagents", () => {

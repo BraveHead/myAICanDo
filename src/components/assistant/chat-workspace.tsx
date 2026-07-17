@@ -66,7 +66,15 @@ import {
   type ClientMemoryListStatus,
   type ClientStoredMemory,
 } from "@/lib/memory-client";
-import { getThreadPath } from "@/lib/thread-routes";
+import {
+  getNewWorkspacePath,
+  getThreadPath,
+  getWorkspacePath,
+} from "@/lib/thread-routes";
+import {
+  loadWorkspacesFromServer,
+  type ClientWorkspace,
+} from "@/lib/workspace-client";
 
 type Suggestion = {
   label: string;
@@ -181,6 +189,7 @@ const memoryStatusLabels: Record<string, string> = {
 type ChatWorkspaceProps = {
   initialThreadId?: string;
   tenantHashId: string;
+  workspaceId: string;
 };
 
 type SelectThreadOptions = {
@@ -191,6 +200,7 @@ type SelectThreadOptions = {
 export function ChatWorkspace({
   initialThreadId,
   tenantHashId,
+  workspaceId,
 }: ChatWorkspaceProps) {
   return (
     <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-white text-[#121212]">
@@ -199,6 +209,7 @@ export function ChatWorkspace({
           <ChatWorkspaceContent
             initialThreadId={initialThreadId}
             tenantHashId={tenantHashId}
+            workspaceId={workspaceId}
           />
         </div>
       </section>
@@ -209,12 +220,14 @@ export function ChatWorkspace({
 function ChatWorkspaceContent({
   initialThreadId,
   tenantHashId,
+  workspaceId,
 }: ChatWorkspaceProps) {
   const aui = useAui();
   const isRunning = useAuiState((state) => state.thread.isRunning);
   const pathname = usePathname();
   const router = useRouter();
   const [threads, setThreads] = useState<StoredThread[]>([]);
+  const [workspaces, setWorkspaces] = useState<ClientWorkspace[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
@@ -224,13 +237,13 @@ function ChatWorkspaceContent({
   const selectThread = useCallback(
     (threadId: string | null, options: SelectThreadOptions = {}) => {
       setActiveThreadId(threadId);
-      saveActiveThreadId(tenantHashId, threadId);
+      saveActiveThreadId(tenantHashId, workspaceId, threadId);
 
       if (!threadId || options.syncUrl === false) {
         return;
       }
 
-      const nextPath = getThreadPath(tenantHashId, threadId);
+      const nextPath = getThreadPath(tenantHashId, threadId, workspaceId);
       if (pathname === nextPath) {
         return;
       }
@@ -242,12 +255,12 @@ function ChatWorkspaceContent({
 
       router.push(nextPath);
     },
-    [pathname, router, tenantHashId],
+    [pathname, router, tenantHashId, workspaceId],
   );
 
   const refreshThreads = useCallback(
     async (preferredThreadId: string | null) => {
-      const serverThreads = await loadThreadsFromServer(tenantHashId);
+      const serverThreads = await loadThreadsFromServer(tenantHashId, workspaceId);
       if (serverThreads.length === 0) {
         return;
       }
@@ -262,18 +275,29 @@ function ChatWorkspaceContent({
 
       selectThread(nextThreadId, { replace: true });
     },
-    [selectThread, tenantHashId],
+    [selectThread, tenantHashId, workspaceId],
   );
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const serverThreads = await loadThreadsFromServer(tenantHashId);
+      const [workspaceResult, threadResult] = await Promise.allSettled([
+        loadWorkspacesFromServer(tenantHashId),
+        loadThreadsFromServer(tenantHashId, workspaceId),
+      ]);
       if (cancelled) {
         return;
       }
 
-      const savedThreadId = loadActiveThreadId(tenantHashId);
+      const workspaceData =
+        workspaceResult.status === "fulfilled"
+          ? workspaceResult.value
+          : { workspaces: [], defaultWorkspaceId: workspaceId };
+      const serverThreads =
+        threadResult.status === "fulfilled" ? threadResult.value : [];
+
+      setWorkspaces(workspaceData.workspaces);
+      const savedThreadId = loadActiveThreadId(tenantHashId, workspaceId);
       const savedThreadExists =
         savedThreadId !== null &&
         serverThreads.some((thread) => thread.id === savedThreadId);
@@ -316,7 +340,7 @@ function ChatWorkspaceContent({
     return () => {
       cancelled = true;
     };
-  }, [initialThreadId, selectThread, tenantHashId]);
+  }, [initialThreadId, selectThread, tenantHashId, workspaceId]);
 
   useEffect(() => {
     if (!hydrated || !activeThreadId) {
@@ -330,6 +354,7 @@ function ChatWorkspaceContent({
     void (async () => {
       const serverRepository = await loadRepositoryFromServer(
         tenantHashId,
+        workspaceId,
         activeThreadId,
       );
       if (cancelled) {
@@ -353,7 +378,7 @@ function ChatWorkspaceContent({
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId, hydrated, aui, tenantHashId]);
+  }, [activeThreadId, hydrated, aui, tenantHashId, workspaceId]);
 
   useEffect(() => {
     if (!hydrated || !activeThreadId) {
@@ -401,6 +426,7 @@ function ChatWorkspaceContent({
           await saveRepositoryToServer({
             repository,
             tenantHashId,
+            workspaceId,
             threadId: activeThreadId,
           });
         } catch {
@@ -412,7 +438,15 @@ function ChatWorkspaceContent({
     }
 
     previousRunningRef.current = isRunning;
-  }, [activeThreadId, hydrated, isRunning, refreshThreads, aui, tenantHashId]);
+  }, [
+    activeThreadId,
+    hydrated,
+    isRunning,
+    refreshThreads,
+    aui,
+    tenantHashId,
+    workspaceId,
+  ]);
 
   const activeThread = useMemo(
     () => threads.find((thread) => thread.id === activeThreadId),
@@ -466,11 +500,43 @@ function ChatWorkspaceContent({
           type="button"
         >
           <Plus size={19} />
-          New Thread
+          新建对话
         </button>
 
+        <div className="mb-5 px-1">
+          <span className="mb-2 block px-1 text-xs font-semibold text-[#858585]">
+            工作区
+          </span>
+          <select
+            className="h-10 w-full rounded-lg border border-[#e6e6e6] bg-white px-3 text-sm text-[#252525] outline-none transition-colors focus:border-[#bdbdbd]"
+            onChange={(event) => {
+              if (event.target.value !== workspaceId) {
+                router.push(getWorkspacePath(tenantHashId, event.target.value));
+              }
+            }}
+            value={workspaceId}
+          >
+            {workspaces.length === 0 ? (
+              <option value={workspaceId}>当前工作区</option>
+            ) : (
+              workspaces.map((workspace) => (
+                <option key={workspace.workspaceId} value={workspace.workspaceId}>
+                  {workspace.name}
+                </option>
+              ))
+            )}
+          </select>
+          <Link
+            className="mt-2 flex h-9 items-center justify-center gap-2 rounded-lg border border-dashed border-[#d8d8d8] text-sm font-medium text-[#555555] transition-colors hover:border-[#999999] hover:bg-white"
+            href={getNewWorkspacePath(tenantHashId)}
+          >
+            <Plus size={15} />
+            新建工作区
+          </Link>
+        </div>
+
         <div className="mb-3 px-2 text-xs font-semibold text-[#858585]">
-          Earlier
+          历史对话
         </div>
         <div className="chat-scrollbar -mx-1 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1">
           {threads.map((thread) => (
@@ -501,7 +567,7 @@ function ChatWorkspaceContent({
               <PanelLeft size={18} />
             </button>
             <h1 className="truncate text-[16px] font-semibold">
-              {activeThread?.title || "New Chat"}
+              {activeThread?.title || "新建对话"}
             </h1>
           </div>
           <div className="flex shrink-0 items-center gap-1">

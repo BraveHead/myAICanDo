@@ -5,15 +5,14 @@ import type { AgentMessage } from "@/lib/agent/core/agent-definition";
 import { resolveAgentDefinition } from "@/lib/agent/core/agent-registry";
 import { streamConfiguredAgentEvents } from "@/lib/agent/core/agent-runner";
 import { createLangSmithRunConfig } from "@/lib/agent/core/langsmith-tracing";
+import { buildMemoryManifest } from "@/lib/agent/harness/memory";
+import { formatMemoryManifestForPrompt } from "@/lib/agent/harness/context";
 import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
 import { encodeChatSseEvent, type ChatStreamEvent } from "@/lib/chat-stream";
-import {
-  formatMemoriesForPrompt,
-  listMemories,
-  type MemoryScope,
-} from "@/lib/server/memory-store";
 import { createRequestLogger, toLogError } from "@/lib/server/logger";
 import { authErrorResponse, requireTenantAccess } from "@/lib/server/saas";
+import { requireWorkspaceAccess } from "@/lib/server/workspace-context";
+import { getStoredThreadWorkspaceId } from "@/lib/server/thread-store/persistence";
 import {
   appendThreadMessages,
   getThreadAgent,
@@ -34,6 +33,7 @@ type ChatRequestBody = {
   model?: string;
   threadId?: string;
   agent?: SupportedAgent;
+  workspaceId?: string;
 };
 
 type ChatRouteContext = {
@@ -46,7 +46,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const threadAgentSelections = new Map<string, SupportedAgent>();
-const MEMORY_CONTEXT_LIMIT = 20;
 const CHAT_ROUTE = "/api/tenants/[tenantId]/chat";
 
 export async function POST(request: Request, context: ChatRouteContext) {
@@ -115,9 +114,37 @@ export async function POST(request: Request, context: ChatRouteContext) {
   const modelName = body.model || process.env.OPENAI_MODEL || "gpt-4o-mini";
   const baseURL = process.env.OPENAI_BASE_URL || undefined;
   const threadId = resolveThreadId(body.threadId);
+  const storedWorkspaceId = await getStoredThreadWorkspaceId(access, threadId);
+  if (
+    body.workspaceId &&
+    storedWorkspaceId &&
+    body.workspaceId !== storedWorkspaceId
+  ) {
+    return Response.json(
+      {
+        error: {
+          code: "thread_workspace_mismatch",
+          message: "线程不属于当前工作区。",
+        },
+      },
+      { status: 403 },
+    );
+  }
+
+  try {
+    access = await requireWorkspaceAccess(
+      tenantId,
+      body.workspaceId ?? storedWorkspaceId ?? undefined,
+    );
+  } catch (error) {
+    routeLogger.warn({ err: toLogError(error) }, "chat workspace auth failed");
+    return authErrorResponse(error);
+  }
+
   const threadScope = {
     tenantHashId: access.tenantHashId,
     userHashId: access.userHashId,
+    workspaceId: access.workspace.workspaceId,
   };
   const selectionKey = createSelectionKey(threadScope, threadId);
   const requestLogger = createRequestLogger({
@@ -127,6 +154,7 @@ export async function POST(request: Request, context: ChatRouteContext) {
     tenantHashId: access.tenantHashId,
     threadId,
     userHashId: access.userHashId,
+    workspaceId: access.workspace.workspaceId,
   });
 
   const encoder = new TextEncoder();
@@ -172,15 +200,20 @@ export async function POST(request: Request, context: ChatRouteContext) {
           threadAgentSelections.set(selectionKey, agentDefinition.id);
           await saveThreadAgent(threadScope, threadId, agentDefinition.id);
         }
-        const memoryContext =
-          agentDefinition?.id === "memory" || agentDefinition?.id === "coordinator"
-            ? undefined
-            : await getMemoryContext(threadScope);
+        const memoryManifest = await buildMemoryManifest({
+          scope: threadScope,
+          threadId,
+        });
         requestLogger.info(
           {
             agent: agentDefinition?.id ?? "default",
-            hasMemoryContext: Boolean(memoryContext),
+            memoryEntryCounts: {
+              harness: 1,
+              project: memoryManifest.project.length,
+              user: memoryManifest.user.length,
+            },
             persistedAgent,
+            workspaceId: access.workspace.workspaceId,
           },
           "chat stream started",
         );
@@ -192,6 +225,7 @@ export async function POST(request: Request, context: ChatRouteContext) {
           tenantHashId: access.tenantHashId,
           threadId,
           userHashId: access.userHashId,
+          workspaceId: access.workspace.workspaceId,
         });
         const events: AsyncIterable<ChatStreamEvent> =
           agentDefinition !== undefined
@@ -199,7 +233,7 @@ export async function POST(request: Request, context: ChatRouteContext) {
                 definition: agentDefinition,
                 apiKey,
                 baseURL,
-                memoryContext,
+                memoryManifest,
                 modelName,
                 messages: agentMessages,
                 runConfig,
@@ -214,7 +248,7 @@ export async function POST(request: Request, context: ChatRouteContext) {
                   modelName,
                 }),
                 messages: await getModelMessages({
-                  memoryContext,
+                  memoryManifest,
                   requestMessages: agentMessages,
                   scope: threadScope,
                   threadId,
@@ -399,15 +433,15 @@ async function* streamChatModelEvents({
 }
 
 async function getModelMessages({
-  memoryContext,
+  memoryManifest,
   requestMessages,
   scope,
   threadId,
   usesFullHistory,
 }: {
-  memoryContext?: string;
+  memoryManifest?: Parameters<typeof formatMemoryManifestForPrompt>[0];
   requestMessages: AgentMessage[];
-  scope: { tenantHashId: string; userHashId: string };
+  scope: { tenantHashId: string; userHashId: string; workspaceId: string };
   threadId: string;
   usesFullHistory: boolean;
 }) {
@@ -430,22 +464,14 @@ async function getModelMessages({
     return new HumanMessage(message.content);
   });
 
-  if (!memoryContext?.trim()) {
+  if (!memoryManifest) {
     return modelMessages;
   }
 
   return [
-    new SystemMessage(`已保存的用户记忆：\n\n${memoryContext}`),
+    new SystemMessage(formatMemoryManifestForPrompt(memoryManifest)),
     ...modelMessages,
   ];
-}
-
-async function getMemoryContext(scope: MemoryScope) {
-  const memories = await listMemories(scope, {
-    limit: MEMORY_CONTEXT_LIMIT,
-  });
-
-  return formatMemoriesForPrompt(memories) ?? undefined;
 }
 
 function normalizeChunkContent(content: unknown) {
@@ -473,8 +499,8 @@ function normalizeChunkContent(content: unknown) {
 }
 
 function createSelectionKey(
-  scope: { tenantHashId: string; userHashId: string },
+  scope: { tenantHashId: string; userHashId: string; workspaceId: string },
   threadId: string,
 ) {
-  return `${scope.tenantHashId}:${scope.userHashId}:${threadId}`;
+  return `${scope.tenantHashId}:${scope.userHashId}:${scope.workspaceId}:${threadId}`;
 }

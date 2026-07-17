@@ -1,4 +1,7 @@
-export { buildHarnessSystemPrompt } from "./prompt";
+export {
+  buildHarnessSystemPrompt,
+  formatMemoryManifestForPrompt,
+} from "./prompt";
 export {
   offloadToolResultIfNeeded,
   type ContextOffloadPolicy,

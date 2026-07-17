@@ -16,6 +16,7 @@ type CreateLangSmithRunConfigOptions = {
   tenantHashId?: string;
   threadId?: string;
   userHashId?: string;
+  workspaceId?: string;
 };
 
 function ensureLangSmithTracingEnv() {
@@ -38,6 +39,7 @@ export function createLangSmithRunConfig({
   tenantHashId,
   threadId,
   userHashId,
+  workspaceId,
 }: CreateLangSmithRunConfigOptions): RunnableConfig {
   const tracingEnabled = ensureLangSmithTracingEnv();
   const resolvedAgent = agent ?? "default";
@@ -58,6 +60,7 @@ export function createLangSmithRunConfig({
       tenant_hash_id: tenantHashId || undefined,
       thread_id: threadId || undefined,
       user_hash_id: userHashId || undefined,
+      product_workspace_id: workspaceId || undefined,
       langsmith_project: process.env.LANGSMITH_PROJECT || LANGSMITH_PROJECT_NAME,
       langsmith_project_id: LANGSMITH_PROJECT_ID,
       langsmith_project_url: LANGSMITH_PROJECT_URL,

@@ -3,6 +3,9 @@ import { ToolMessage } from "@langchain/core/messages";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  listContextOffloadReferences,
+} from "../src/lib/agent/harness/context/offload-store.ts";
 import { offloadToolResultIfNeeded } from "../src/lib/agent/harness/context/tool-result-offload.ts";
 import { readFilesystemFile } from "../src/lib/agent/services/filesystem-service.ts";
 
@@ -65,6 +68,13 @@ describe("context tool result offloading", () => {
     expect(reference.summary).toBe("已读取大文件。");
     expect(reference.artifactPath.startsWith(".context/offloads/")).toBe(true);
     expect(result.result.content).not.toContain(largeContent);
+
+    await expect(
+      listContextOffloadReferences({
+        threadId: context.threadId,
+        threadScope: context.threadScope,
+      }),
+    ).resolves.toEqual([reference.artifactPath]);
 
     const artifactRead = await readFilesystemFile(context, reference.artifactPath);
     expect(artifactRead.ok).toBe(true);

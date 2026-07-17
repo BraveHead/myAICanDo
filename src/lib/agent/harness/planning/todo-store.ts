@@ -1,4 +1,5 @@
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
+import { ensureDefaultWorkspace } from "@/lib/server/workspace-store";
 import type { TodoInputItem, TodoItem, TodoState, TodoWriteResult } from "./types";
 
 type TodoStateRow = {
@@ -41,15 +42,16 @@ export async function getThreadTodoState(
   }
 
   await ensureTodoStateStore();
+  await backfillNullTodoWorkspace(scope);
 
   const pool = await getTodoPostgresPool();
   const result = await pool.query<TodoStateRow>(
     `
       SELECT agent_id, todos, revision, updated_at
       FROM public.assistant_thread_todo_states
-      WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND thread_id = $3
+      WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND workspace_id = $3 AND thread_id = $4
     `,
-    [scope.tenantHashId, scope.userHashId, threadId],
+    [scope.tenantHashId, scope.userHashId, scope.workspaceId, threadId],
   );
 
   return result.rows[0] ? rowToTodoState(result.rows[0]) : null;
@@ -68,23 +70,39 @@ export async function writeThreadTodoState(
   }
 
   await ensureTodoStateStore();
+  const defaultWorkspace = await ensureDefaultWorkspace(
+    scope.tenantHashId,
+    scope.userHashId,
+  );
 
   const pool = await getTodoPostgresPool();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query(
+      `
+        UPDATE public.assistant_thread_todo_states
+        SET workspace_id = $3
+        WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND workspace_id IS NULL
+      `,
+      [
+        scope.tenantHashId,
+        scope.userHashId,
+        defaultWorkspace.workspaceId,
+      ],
+    );
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", [
-      `todos:${scope.tenantHashId}:${scope.userHashId}:${threadId}`,
+      `todos:${scope.tenantHashId}:${scope.userHashId}:${scope.workspaceId}:${threadId}`,
     ]);
 
     const existingResult = await client.query<TodoStateRow>(
       `
         SELECT agent_id, todos, revision, updated_at
         FROM public.assistant_thread_todo_states
-        WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND thread_id = $3
+        WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND workspace_id = $3 AND thread_id = $4
         FOR UPDATE
       `,
-      [scope.tenantHashId, scope.userHashId, threadId],
+      [scope.tenantHashId, scope.userHashId, scope.workspaceId, threadId],
     );
     const existingState = existingResult.rows[0]
       ? rowToTodoState(existingResult.rows[0])
@@ -106,9 +124,10 @@ export async function writeThreadTodoState(
 
     await client.query(
       `
-        INSERT INTO public.assistant_thread_todo_states (
+        INSERT INTO public.assistant_thread_todo_states AS assistant_thread_todo_states (
           tenant_hash_id,
           user_hash_id,
+          workspace_id,
           thread_id,
           agent_id,
           todos,
@@ -116,17 +135,20 @@ export async function writeThreadTodoState(
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $8)
         ON CONFLICT (tenant_hash_id, user_hash_id, thread_id) DO UPDATE
         SET
           agent_id = EXCLUDED.agent_id,
           todos = EXCLUDED.todos,
           revision = EXCLUDED.revision,
           updated_at = EXCLUDED.updated_at
+        WHERE assistant_thread_todo_states.workspace_id = EXCLUDED.workspace_id
+           OR assistant_thread_todo_states.workspace_id IS NULL
       `,
       [
         scope.tenantHashId,
         scope.userHashId,
+        scope.workspaceId,
         threadId,
         agentId,
         JSON.stringify(state.todos),
@@ -258,6 +280,7 @@ async function setupAssistantThreadTodoStatesTable() {
       id BIGSERIAL PRIMARY KEY,
       tenant_hash_id TEXT NOT NULL,
       user_hash_id TEXT NOT NULL,
+      workspace_id TEXT,
       thread_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
       todos JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -265,6 +288,11 @@ async function setupAssistantThreadTodoStatesTable() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+
+  await pool.query(`
+    ALTER TABLE public.assistant_thread_todo_states
+    ADD COLUMN IF NOT EXISTS workspace_id TEXT
   `);
 
   await pool.query(`
@@ -345,7 +373,23 @@ function createTodoError(code: string, message: string): TodoErrorResult {
 }
 
 function createTodoStateKey(scope: ThreadScope, threadId: string) {
-  return `${scope.tenantHashId}:${scope.userHashId}:${threadId}`;
+  return `${scope.tenantHashId}:${scope.userHashId}:${scope.workspaceId}:${threadId}`;
+}
+
+async function backfillNullTodoWorkspace(scope: ThreadScope) {
+  const defaultWorkspace = await ensureDefaultWorkspace(
+    scope.tenantHashId,
+    scope.userHashId,
+  );
+  const pool = await getTodoPostgresPool();
+  await pool.query(
+    `
+      UPDATE public.assistant_thread_todo_states
+      SET workspace_id = $3
+      WHERE tenant_hash_id = $1 AND user_hash_id = $2 AND workspace_id IS NULL
+    `,
+    [scope.tenantHashId, scope.userHashId, defaultWorkspace.workspaceId],
+  );
 }
 
 async function getTodoPostgresPool() {

@@ -8,6 +8,7 @@ import {
 const scope = {
   tenantHashId: "tenant_1",
   userHashId: "user_1",
+  workspaceId: "ws_1",
 };
 
 let previousDatabaseUrl;
@@ -124,6 +125,7 @@ describe("planning todo store", () => {
         {
           tenantHashId: "tenant_2",
           userHashId: "user_1",
+          workspaceId: "ws_1",
         },
         "thread_1",
       ),

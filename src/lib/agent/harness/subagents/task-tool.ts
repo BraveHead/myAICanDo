@@ -94,6 +94,7 @@ export async function runSubagentTaskTool(
     context: input.context,
     contextPolicy: context.contextPolicy,
     modelName: context.modelName,
+    memoryManifest: context.memoryManifest,
     onStreamEvent: context.onStreamEvent,
     parentAgentId: "coordinator",
     parentThreadId: context.threadId,

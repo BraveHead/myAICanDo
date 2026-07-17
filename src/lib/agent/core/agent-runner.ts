@@ -39,6 +39,10 @@ import {
   type TodoState,
 } from "@/lib/agent/harness/planning";
 import {
+  withHarnessMemory,
+  type MemoryManifest,
+} from "@/lib/agent/harness/memory";
+import {
   getReadonlySubagentDefinition,
   type RunSubagentTaskInput,
   type SubagentTaskResult,
@@ -54,6 +58,7 @@ type StreamConfiguredAgentEventsOptions = CreateConfiguredAgentOptions & {
   contextPolicy?: ContextOffloadPolicy;
   definition: AgentDefinition;
   memoryContext?: string;
+  memoryManifest?: MemoryManifest;
   messages: AgentMessage[];
   onStreamEvent?: (event: ChatStreamEvent) => void;
   planningEnabled?: boolean;
@@ -128,6 +133,7 @@ async function createConfiguredAgent(
   definition: AgentDefinition,
   options: CreateConfiguredAgentOptions & {
     memoryContext?: string;
+    memoryManifest?: MemoryManifest;
     onStreamEvent?: (event: ChatStreamEvent) => void;
     planningEnabled?: boolean;
     runLogger?: Logger;
@@ -153,6 +159,7 @@ export async function* streamConfiguredAgentEvents({
   contextPolicy,
   definition,
   memoryContext,
+  memoryManifest,
   messages,
   onStreamEvent,
   planningEnabled = true,
@@ -178,10 +185,15 @@ export async function* streamConfiguredAgentEvents({
     threadId && threadScope
       ? await getThreadTodoState(threadScope, threadId)
       : null;
+  const effectiveMemoryManifest = withHarnessMemory(memoryManifest, {
+    threadId,
+    todoState,
+  });
   const agent = await createConfiguredAgent(definition, {
     ...modelOptions,
     contextPolicy,
     memoryContext,
+    memoryManifest: effectiveMemoryManifest,
     onStreamEvent: (event) => {
       if (event.type === "tool_call" && event.status === "complete") {
         completedToolCallCount += 1;
@@ -203,11 +215,25 @@ export async function* streamConfiguredAgentEvents({
   const agentThreadId = threadId
     ? createAgentThreadId(definition.id, threadId, threadScope)
     : undefined;
+  const legacyAgentThreadId = threadId
+    ? createLegacyAgentThreadId(definition.id, threadId, threadScope)
+    : undefined;
+  const primaryCheckpoint = agentThreadId
+    ? await getCheckpointTuple(agentCheckpointer, agentThreadId)
+    : undefined;
+  const legacyCheckpoint =
+    agentThreadId &&
+    legacyAgentThreadId &&
+    agentThreadId !== legacyAgentThreadId &&
+    !primaryCheckpoint
+      ? await getCheckpointTuple(agentCheckpointer, legacyAgentThreadId)
+      : undefined;
   const invocationMessages =
     agentThreadId && threadId && threadScope
       ? await getMessagesForCheckpointedRun({
           agentThreadId,
-          checkpointer: agentCheckpointer,
+          checkpoint: primaryCheckpoint,
+          legacyCheckpoint,
           messages,
           scope: threadScope,
           threadId,
@@ -315,6 +341,14 @@ export async function* streamConfiguredAgentEvents({
       agentThreadId,
       checkpointer: getCheckpointerType(agentCheckpointer),
       hasMemoryContext: Boolean(memoryContext),
+      memoryEntryCounts: effectiveMemoryManifest
+        ? {
+            harness: 1,
+            project: effectiveMemoryManifest.project.length,
+            user: effectiveMemoryManifest.user.length,
+          }
+        : undefined,
+      legacyCheckpointFallback: Boolean(legacyCheckpoint),
       hasTodoState: Boolean(todoState?.todos.length),
       invocationMessageCount: invocationMessages.length,
       recursionLimit,
@@ -435,6 +469,7 @@ async function runSubagentTask({
   context,
   contextPolicy,
   modelName,
+  memoryManifest,
   parentAgentId,
   parentThreadId,
   runConfig,
@@ -488,6 +523,7 @@ async function runSubagentTask({
       baseURL,
       contextPolicy,
       definition,
+      memoryManifest,
       messages: [
         {
           role: "user",
@@ -1424,34 +1460,43 @@ function createAgentThreadId(
   scope?: ThreadScope,
 ) {
   return scope
+    ? `${agentId}:${scope.tenantHashId}:${scope.userHashId}:${scope.workspaceId}:${threadId}`
+    : `${agentId}:${threadId}`;
+}
+
+function createLegacyAgentThreadId(
+  agentId: AgentDefinition["id"],
+  threadId: string,
+  scope?: ThreadScope,
+) {
+  return scope
     ? `${agentId}:${scope.tenantHashId}:${scope.userHashId}:${threadId}`
     : `${agentId}:${threadId}`;
 }
 
 async function getMessagesForCheckpointedRun({
   agentThreadId,
-  checkpointer,
+  checkpoint,
+  legacyCheckpoint,
   messages,
   scope,
   threadId,
 }: {
   agentThreadId: string;
-  checkpointer: AgentCheckpointer;
+  checkpoint?: unknown;
+  legacyCheckpoint?: unknown;
   messages: AgentMessage[];
   scope: ThreadScope;
   threadId: string;
 }) {
-  const checkpointExists =
-    initializedAgentThreads.has(agentThreadId) ||
-    Boolean(
-      await checkpointer.getTuple({
-        configurable: {
-          thread_id: agentThreadId,
-        },
-      }),
-    );
+  const checkpointExists = initializedAgentThreads.has(agentThreadId) || Boolean(checkpoint);
 
   if (!checkpointExists) {
+    const legacyMessages = extractCheckpointMessages(legacyCheckpoint);
+    if (legacyMessages.length > 0) {
+      return mergeAgentMessages(legacyMessages, messages);
+    }
+
     if (messages.length > 1) {
       return messages;
     }
@@ -1467,6 +1512,59 @@ async function getMessagesForCheckpointedRun({
   );
 
   return latestUserMessage ? [latestUserMessage] : messages.slice(-1);
+}
+
+async function getCheckpointTuple(
+  checkpointer: AgentCheckpointer,
+  threadId: string,
+) {
+  if (initializedAgentThreads.has(threadId)) {
+    return { initialized: true };
+  }
+
+  return checkpointer.getTuple({
+    configurable: {
+      thread_id: threadId,
+    },
+  });
+}
+
+function extractCheckpointMessages(value: unknown): AgentMessage[] {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  const checkpoint = value as {
+    checkpoint?: {
+      channel_values?: Record<string, unknown>;
+    };
+  };
+  const channelValues = checkpoint.checkpoint?.channel_values;
+  const messages = channelValues?.messages;
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+
+  return messages.flatMap((message) => {
+    if (!message || typeof message !== "object") {
+      return [];
+    }
+
+    const candidate = message as {
+      content?: unknown;
+      role?: unknown;
+      type?: unknown;
+    };
+    const role = candidate.role ?? candidate.type;
+    if (role !== "system" && role !== "user" && role !== "assistant" && role !== "human" && role !== "ai") {
+      return [];
+    }
+
+    return [{
+      content: normalizeMessageContent(candidate.content),
+      role: role === "human" ? "user" : role === "ai" ? "assistant" : role,
+    } satisfies AgentMessage];
+  });
 }
 
 function normalizeMessageContent(content: unknown) {

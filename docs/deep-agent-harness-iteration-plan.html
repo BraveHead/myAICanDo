@@ -511,9 +511,9 @@
           </tr>
           <tr>
             <td>Skills</td>
-            <td>没有 <code>SKILL.md</code> 风格的按需加载机制。</td>
-            <td>待新增</td>
-            <td><span class="status todo">未开始</span></td>
+            <td>已有 <code>agent-skills/*/SKILL.md</code> 摘要加载、<code>list_skills</code> 和只读 <code>read_skill</code>。</td>
+            <td><code>src/lib/agent/harness/skills/</code><br><code>src/lib/agent/harness/agent-harness.ts</code></td>
+            <td><span class="status done">M5 已落地</span></td>
           </tr>
           <tr>
             <td>Context compression/offloading</td>
@@ -760,12 +760,18 @@
               </div>
               <div class="step-box">
                 <strong>边界</strong>
-                用户偏好仍按 tenant/user 隔离；项目规则按 assistant 或 workspace 隔离；两者在 prompt 中分段。
+                用户偏好仍按 tenant/user 隔离；项目规则只按 tenant/workspace 隔离，不引入 assistantId；两者在 prompt 中分段。
               </div>
               <div class="step-box">
                 <strong>验收</strong>
-                agent 能区分用户偏好、项目规则、当前线程临时上下文；保存/删除仍需 approval。
+                agent 能区分用户偏好、workspace 项目规则、当前线程临时上下文；保存/删除仍需 approval；workspace 切换不会串线程或 checkpoint。
               </div>
+            </div>
+            <div class="note">
+              <strong>M6 v1 已落地：</strong>
+              新增 opaque <code>workspaceId</code> 和 <code>assistant_workspaces</code>，thread/todo/checkpoint 都纳入 workspace 维度；旧 URL 会解析后跳转到 <code>/:tenantId/workspace/:workspaceId/chat/:threadId</code>。
+              项目记忆只读取 <code>&lt;FILESYSTEM_SANDBOX_ROOT&gt;/&lt;tenantHashId&gt;/workspaces/&lt;workspaceId&gt;/AGENTS.md</code>，拒绝 symlink、越权路径和超限文本；普通 filesystem 工具不能访问该文件。
+              Harness 使用统一 <code>MemoryManifest</code>，并对 agent、coordinator、subagent 和 fallback model 使用同一份 user/project/harness 三段上下文。
             </div>
           </div>
         </article>
@@ -841,20 +847,20 @@
     <section id="first">
       <h2 class="section"><span class="num">§5</span>第一步建议</h2>
       <div class="callout warn">
-        <strong>建议从 M1：Filesystem v1.1 开始。</strong>
-        M0 是必要的轻量抽象，但第一个可交付功能应是 filesystem。原因是当前项目已经有 <code>filesystemAgentDefinition</code>、sandbox root、路径校验、list/read/search 工具和 coordinator 委派入口，扩展成本最低，且能马上为后续 planning、skills、context offloading 和 subagents 提供工作区。
+        <strong>下一步建议从 M6：Memory v2 开始。</strong>
+        M0-M5 的 Harness、filesystem、planning、context offloading、subagents 和 skills 已形成基础；当前应先把 workspace 边界、项目记忆和用户记忆统一到运行上下文，再继续扩展 HITL v2 和 streaming v2。
       </div>
 
-      <h3>M1 的拆分顺序</h3>
+      <h3>M6 的拆分顺序</h3>
       <ol>
-        <li>先补 <code>glob_files</code>，因为它是只读能力，风险低，能验证工具命名、schema、fallback summary 和 UI 展示链路。</li>
-        <li>再补 <code>write_file</code>，只允许创建或覆盖 <code>workspace/**</code>、<code>notes/**</code> 下的 UTF-8 文本文件。</li>
-        <li>再补 <code>edit_file</code>，只支持 exact string replacement，必须返回 before/after preview。</li>
-        <li>最后补 <code>delete_file</code>，默认必须 approval，且先只允许删除文件，不允许递归删目录。</li>
-        <li>把 filesystem 写入和删除接入统一 approval，先复用当前 memory approval UI，不急着做复杂 decision 类型。</li>
+        <li>先完成 workspace 表、默认 workspace 和 thread/todo 历史回填，所有访问先经过 tenant/workspace resolver。</li>
+        <li>再完成 workspace API、规范路由、旧 URL 重定向、workspace selector 和当前 workspace 的 thread 列表。</li>
+        <li>实现只读 <code>AGENTS.md</code> loader，拒绝根目录文件、symlink、越权路径、损坏和超限内容。</li>
+        <li>把 user memory、project memory 和 harness memory 组装为 <code>MemoryManifest</code>，统一接入 agent、coordinator、subagent 和 fallback model。</li>
+        <li>补齐 tenant/workspace 隔离、checkpoint 兼容、approval 跨 workspace 拒绝和页面回归验收，再进入 M7。</li>
       </ol>
 
-      <h3>M1 建议改动文件</h3>
+      <h3>M6 关键改动文件</h3>
       <table>
         <thead>
           <tr>
@@ -864,24 +870,24 @@
         </thead>
         <tbody>
           <tr>
-            <td><code>src/lib/agent/services/filesystem-service.ts</code></td>
-            <td>增加 glob/write/edit/delete 服务函数；抽出 permission evaluator；保留现有路径安全函数。</td>
+            <td><code>src/lib/server/workspace-store.ts</code></td>
+            <td>workspace 实体、默认 workspace、创建/列表和 tenant 归属。</td>
           </tr>
           <tr>
-            <td><code>src/lib/tools/filesystem-tool.ts</code></td>
-            <td>注册新工具，schema 中明确相对路径、最大大小、替换次数等约束。</td>
+            <td><code>src/lib/server/thread-store/persistence.ts</code><br><code>src/lib/agent/harness/planning/todo-store.ts</code></td>
+            <td>thread/todo 增加 workspace 维度，历史 null 数据按当前 tenant/user 的默认 workspace 回填。</td>
           </tr>
           <tr>
-            <td><code>src/lib/agent/definitions/filesystem.ts</code></td>
-            <td>更新 system prompt，让 agent 知道只在用户明确要求时写文件，危险操作需要确认。</td>
+            <td><code>src/lib/agent/harness/memory/</code><br><code>src/lib/agent/harness/context/prompt.ts</code></td>
+            <td>安全读取 workspace <code>AGENTS.md</code>，构建并渲染 user/project/harness 三段 MemoryManifest。</td>
           </tr>
           <tr>
-            <td><code>src/lib/approval-actions.ts</code></td>
-            <td>把 <code>write_file/edit_file/delete_file</code> 加入 approval gate，或先抽成 registry。</td>
+            <td><code>src/app/api/tenants/[tenantId]/chat/route.ts</code><br><code>src/lib/agent/core/agent-runner.ts</code></td>
+            <td>校验 workspace、注入 manifest、扩展 checkpoint namespace 并兼容旧 key。</td>
           </tr>
           <tr>
-            <td><code>src/lib/agent/core/agent-runner.ts</code></td>
-            <td>扩展 approval preview 和 filesystem fallback summary。</td>
+            <td><code>src/components/assistant/chat-workspace.tsx</code><br><code>src/lib/thread-storage.ts</code></td>
+            <td>workspace selector、当前 workspace thread 列表、请求和本地 active thread scope。</td>
           </tr>
         </tbody>
       </table>
@@ -906,7 +912,7 @@
             <li><code>fnm exec --using .node-version bun run typecheck</code> 通过。</li>
             <li><code>fnm exec --using .node-version bun run lint</code> 通过。</li>
             <li>新增 service/tool 的路径逃逸、权限、空输入、超限输入都有测试。</li>
-            <li>Postgres checkpointer 和 thread-store 的隔离 key 不变。</li>
+            <li>Postgres checkpointer 和 thread-store 的隔离 key 都包含 workspace 维度，并兼容旧 key。</li>
             <li>现有 demo/weather/literary/memory/filesystem/coordinator 行为不回退。</li>
           </ul>
         </div>

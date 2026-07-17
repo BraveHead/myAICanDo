@@ -1,5 +1,8 @@
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
-import { writeInternalFilesystemArtifact } from "@/lib/agent/services/filesystem-service";
+import {
+  globFilesystemFiles,
+  writeInternalFilesystemArtifact,
+} from "@/lib/agent/services/filesystem-service";
 
 type ContextOffloadArtifact = {
   artifactPath: string;
@@ -23,6 +26,25 @@ export type WriteContextOffloadArtifactOptions = {
   toolCallId: string;
   toolName: string;
 };
+
+export async function listContextOffloadReferences({
+  threadId,
+  threadScope,
+}: Pick<WriteContextOffloadArtifactOptions, "threadId" | "threadScope">) {
+  const result = await globFilesystemFiles(
+    {
+      threadId,
+      threadScope,
+    },
+    {
+      maxResults: 50,
+      path: ".context/offloads",
+      pattern: "*.json",
+    },
+  );
+
+  return result.ok ? result.matches.map((match) => match.path) : [];
+}
 
 export async function writeContextOffloadArtifact({
   args,
