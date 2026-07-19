@@ -1326,6 +1326,13 @@ function ToolCallPart({
   status,
   toolName,
 }: ToolCallMessagePartProps) {
+  const [argsEditorOpen, setArgsEditorOpen] = useState(false);
+  const [argsDraft, setArgsDraft] = useState(() => formatToolPayload(args));
+  const [guidanceEditorOpen, setGuidanceEditorOpen] = useState(false);
+  const [guidanceDraft, setGuidanceDraft] = useState("");
+  const [approvalFormError, setApprovalFormError] = useState<string | null>(
+    null,
+  );
   const retryInfo = getToolRetryInfo(args);
   const running = status.type === "running";
   const approvalPending =
@@ -1336,6 +1343,12 @@ function ToolCallPart({
   const approvalRejected = approval?.approved === false;
   const approvalPreview = getApprovalPreview(approval);
   const approvalSubject = getApprovalSubject(toolName, approvalPreview);
+  const approvalOptions = approval?.options ?? [];
+  const canEditArgs = hasApprovalOption(approvalOptions, "edit-and-execute");
+  const canProvideGuidance = hasApprovalOption(
+    approvalOptions,
+    "provide-guidance",
+  );
   const failed = isError || status.type === "incomplete";
   const Icon =
     approvalPending || approvalRejected || failed
@@ -1347,7 +1360,7 @@ function ToolCallPart({
   if (approvalPending) {
     statusText = "待确认";
   } else if (approvalApproved) {
-    statusText = "已确认";
+    statusText = running ? "执行中" : "已完成";
   } else if (approvalRejected) {
     statusText = "已取消";
   } else if (running && retryInfo) {
@@ -1392,11 +1405,40 @@ function ToolCallPart({
             <div className="mt-2 flex flex-wrap gap-2">
               <button
                 className="rounded-md bg-[#111111] px-3 py-1.5 font-medium text-white transition-colors hover:bg-[#303030]"
-                onClick={() => respondToApproval({ approved: true })}
+                onClick={() =>
+                  respondToApproval({
+                    approved: true,
+                    optionId: "approve-once",
+                  })
+                }
                 type="button"
               >
                 确认执行
               </button>
+              {canEditArgs && (
+                <button
+                  className="rounded-md border border-sky-300 bg-white px-3 py-1.5 font-medium text-sky-900 transition-colors hover:bg-sky-50"
+                  onClick={() => {
+                    setApprovalFormError(null);
+                    setArgsEditorOpen((open) => !open);
+                  }}
+                  type="button"
+                >
+                  修改参数
+                </button>
+              )}
+              {canProvideGuidance && (
+                <button
+                  className="rounded-md border border-violet-300 bg-white px-3 py-1.5 font-medium text-violet-900 transition-colors hover:bg-violet-50"
+                  onClick={() => {
+                    setApprovalFormError(null);
+                    setGuidanceEditorOpen((open) => !open);
+                  }}
+                  type="button"
+                >
+                  提供指导
+                </button>
+              )}
               <button
                 className="rounded-md border border-amber-300 bg-white px-3 py-1.5 font-medium text-amber-900 transition-colors hover:bg-amber-100"
                 onClick={() =>
@@ -1410,9 +1452,87 @@ function ToolCallPart({
                 取消
               </button>
             </div>
+            {argsEditorOpen && canEditArgs && (
+              <div className="mt-3 space-y-2 rounded-lg border border-sky-200 bg-sky-50 p-3">
+                <label className="block text-xs font-medium text-sky-950">
+                  修改后的 JSON 参数
+                  <textarea
+                    aria-label="修改后的 JSON 参数"
+                    className="mt-1 min-h-32 w-full resize-y rounded-md border border-sky-200 bg-white px-2 py-1.5 font-mono text-[11px] leading-5 text-sky-950 outline-none focus:border-sky-400"
+                    onChange={(event) => setArgsDraft(event.target.value)}
+                    value={argsDraft}
+                  />
+                </label>
+                <button
+                  className="rounded-md bg-sky-700 px-3 py-1.5 font-medium text-white transition-colors hover:bg-sky-800"
+                  onClick={() => {
+                    try {
+                      const editedArgs = JSON.parse(argsDraft) as unknown;
+                      if (!isPlainRecord(editedArgs)) {
+                        setApprovalFormError("参数必须是 JSON 对象。");
+                        return;
+                      }
+
+                      respondToApproval({
+                        approved: true,
+                        optionId: "edit-and-execute",
+                        reason: JSON.stringify({
+                          args: editedArgs,
+                          version: 1,
+                        }),
+                      });
+                    } catch {
+                      setApprovalFormError("JSON 参数格式不正确。");
+                    }
+                  }}
+                  type="button"
+                >
+                  修改参数并执行
+                </button>
+              </div>
+            )}
+            {guidanceEditorOpen && canProvideGuidance && (
+              <div className="mt-3 space-y-2 rounded-lg border border-violet-200 bg-violet-50 p-3">
+                <label className="block text-xs font-medium text-violet-950">
+                  给 Agent 的指导
+                  <textarea
+                    aria-label="给 Agent 的指导"
+                    className="mt-1 min-h-20 w-full resize-y rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs leading-5 text-violet-950 outline-none focus:border-violet-400"
+                    maxLength={2000}
+                    onChange={(event) => setGuidanceDraft(event.target.value)}
+                    placeholder="例如：不要删除原文件，请先创建备份。"
+                    value={guidanceDraft}
+                  />
+                </label>
+                <button
+                  className="rounded-md bg-violet-700 px-3 py-1.5 font-medium text-white transition-colors hover:bg-violet-800"
+                  onClick={() => {
+                    const guidance = guidanceDraft.trim();
+                    if (!guidance) {
+                      setApprovalFormError("指导内容不能为空。");
+                      return;
+                    }
+
+                    respondToApproval({
+                      approved: false,
+                      optionId: "provide-guidance",
+                      reason: guidance,
+                    });
+                  }}
+                  type="button"
+                >
+                  提交指导
+                </button>
+              </div>
+            )}
+            {approvalFormError && (
+              <div className="mt-2 text-xs text-red-700" role="alert">
+                {approvalFormError}
+              </div>
+            )}
           </div>
         )}
-        {approvalApproved && result === undefined && (
+        {approvalApproved && running && (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">
             已确认，服务端会继续执行该{approvalSubject}并返回结果。
           </div>
@@ -1428,6 +1548,13 @@ function ToolCallPart({
       </div>
     </div>
   );
+}
+
+function hasApprovalOption(
+  options: readonly { id: string }[],
+  optionId: string,
+) {
+  return options.some((option) => option.id === optionId);
 }
 
 type MemoryApprovalPreviewData = {

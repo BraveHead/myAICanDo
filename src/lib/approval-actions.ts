@@ -15,19 +15,37 @@ export type ApprovalGatedToolName = (typeof APPROVAL_GATED_TOOL_NAMES)[number];
 export type ApprovalActionStatus =
   | "pending"
   | "approved"
+  | "executing"
   | "rejected"
   | "executed"
   | "expired"
   | "failed";
+
+export type ApprovalDecision =
+  | "approve"
+  | "reject"
+  | "edit_args"
+  | "guidance";
+
+export type ApprovalOption = {
+  id: string;
+  kind: string;
+  label: string;
+  description?: string;
+};
 
 export type ApprovalToolResult = {
   content: string;
   status: "error" | "success";
 };
 
+export type ApprovalPreview = MemorySavePreview | FilesystemApprovalPreview;
+
 export type ApprovalExecutionResponse = {
   approvalId: string;
   approved: boolean;
+  decision?: ApprovalDecision;
+  followUpMessage?: string;
   finalText: string;
   isError: boolean;
   ok: boolean;

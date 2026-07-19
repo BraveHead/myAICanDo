@@ -9,7 +9,6 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import {
-  isApprovalGatedToolName,
   type ApprovalGatedToolName,
   type ApprovalPendingPayload,
 } from "@/lib/approval-actions";
@@ -20,20 +19,20 @@ import {
   offloadToolResultIfNeeded,
   type ContextOffloadPolicy,
 } from "../harness/context";
+import {
+  createApprovalOptions,
+  getApprovalActionLabel,
+  isApprovalPolicyToolName,
+  prepareApprovalAction as prepareApprovalPolicy,
+} from "@/lib/approval-policy";
 import { createRequestLogger, logger, toLogError } from "@/lib/server/logger";
 import { createPendingAction } from "@/lib/server/pending-action-store";
-import { previewSaveMemory } from "@/lib/server/memory-store";
 import { getPostgresPool, hasDatabaseUrl } from "@/lib/server/postgres";
 import {
   loadThreadAgentMessages,
   mergeAgentMessages,
 } from "@/lib/server/thread-store";
 import type { ThreadScope } from "@/lib/server/thread-store/persistence";
-import {
-  previewFilesystemDelete,
-  previewFilesystemEdit,
-  previewFilesystemWrite,
-} from "@/lib/agent/services/filesystem-service";
 import {
   getThreadTodoState,
   type TodoState,
@@ -95,15 +94,6 @@ type CoordinatorToolSummary = {
   isError: boolean;
   summary: string;
 };
-type ApprovalPreparation =
-  | {
-      preview?: ApprovalPendingPayload["preview"];
-      requiresApproval: true;
-    }
-  | {
-      requiresApproval: false;
-    };
-
 let checkpointer: AgentCheckpointer | null = null;
 let checkpointerPromise: Promise<AgentCheckpointer> | null = null;
 const initializedAgentThreads = new Set<string>();
@@ -771,7 +761,7 @@ function createToolCallStreamingMiddleware(
         return handler(request);
       }
 
-      if (isApprovalGatedToolName(toolName)) {
+      if (isApprovalPolicyToolName(toolName)) {
         const pendingAction = await createToolApprovalAction({
           args,
           approvalContext,
@@ -950,13 +940,20 @@ async function createToolApprovalAction({
     throw new Error("人工确认工具需要 tenant/user/thread 上下文。");
   }
 
-  const approvalPreparation = await prepareApprovalAction({
+  const approvalPreparation = await prepareApprovalPolicy({
     args,
-    threadId: approvalContext.threadId,
-    threadScope: approvalContext.threadScope,
+    context: {
+      threadId: approvalContext.threadId,
+      threadScope: approvalContext.threadScope,
+    },
     toolName,
   });
   if (!approvalPreparation.requiresApproval) {
+    if (approvalPreparation.validationError) {
+      throw new Error(
+        `工具参数无效，已阻止执行：${approvalPreparation.validationError}`,
+      );
+    }
     return null;
   }
 
@@ -983,168 +980,11 @@ async function createToolApprovalAction({
 }
 
 function createToolApprovalPayload(action: ApprovalPendingPayload) {
-  const actionLabel = getApprovalActionLabel(action.toolName);
-
   return {
     id: action.actionId,
-    options: [
-      {
-        id: "approve-once",
-        kind: "allow-once",
-        label: `确认${actionLabel}`,
-        description: "只允许本次工具调用执行。",
-      },
-      {
-        id: "reject-once",
-        kind: "reject-once",
-        label: "取消",
-        description: getApprovalRejectDescription(action.toolName),
-      },
-    ],
+    options: createApprovalOptions(action.toolName),
     ...(action.preview ? { preview: action.preview } : {}),
   };
-}
-
-async function prepareApprovalAction({
-  args,
-  threadId,
-  threadScope,
-  toolName,
-}: {
-  args: unknown;
-  threadId: string;
-  threadScope: ThreadScope;
-  toolName: ApprovalGatedToolName;
-}): Promise<ApprovalPreparation> {
-  if (isFilesystemMutationToolName(toolName)) {
-    const preview = await createFilesystemApprovalPreview({
-      args,
-      threadId,
-      threadScope,
-      toolName,
-    });
-
-    return preview
-      ? {
-          preview,
-          requiresApproval: true,
-        }
-      : {
-          requiresApproval: false,
-        };
-  }
-
-  return {
-    preview: await createMemoryApprovalPreview({
-      args,
-      threadScope,
-      toolName,
-    }),
-    requiresApproval: true,
-  };
-}
-
-async function createMemoryApprovalPreview({
-  args,
-  threadScope,
-  toolName,
-}: {
-  args: unknown;
-  threadScope: ThreadScope;
-  toolName: ApprovalGatedToolName;
-}) {
-  if (toolName !== "save_memory" || !isRecord(args)) {
-    return undefined;
-  }
-
-  const content = typeof args.content === "string" ? args.content.trim() : "";
-  if (!content) {
-    return undefined;
-  }
-
-  const category =
-    typeof args.category === "string" && args.category.trim()
-      ? args.category
-      : "general";
-
-  return (await previewSaveMemory(threadScope, {
-    category,
-    content,
-  })) ?? undefined;
-}
-
-async function createFilesystemApprovalPreview({
-  args,
-  threadId,
-  threadScope,
-  toolName,
-}: {
-  args: unknown;
-  threadId: string;
-  threadScope: ThreadScope;
-  toolName: ApprovalGatedToolName;
-}) {
-  if (!isRecord(args)) {
-    return undefined;
-  }
-
-  const inputPath = typeof args.path === "string" ? args.path : "";
-  if (!inputPath) {
-    return undefined;
-  }
-
-  if (toolName === "write_file") {
-    if (typeof args.content !== "string") {
-      return undefined;
-    }
-
-    const preview = await previewFilesystemWrite(
-      {
-        threadId,
-        threadScope,
-      },
-      {
-        content: args.content,
-        path: inputPath,
-      },
-    );
-    return preview.ok ? preview.preview : undefined;
-  }
-
-  if (toolName === "edit_file") {
-    if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
-      return undefined;
-    }
-
-    const preview = await previewFilesystemEdit(
-      {
-        threadId,
-        threadScope,
-      },
-      {
-        newText: args.newText,
-        oldText: args.oldText,
-        path: inputPath,
-        replaceAll: args.replaceAll === true,
-      },
-    );
-    return preview.ok ? preview.preview : undefined;
-  }
-
-  if (toolName === "delete_file") {
-    const preview = await previewFilesystemDelete(
-      {
-        threadId,
-        threadScope,
-      },
-      {
-        path: inputPath,
-      },
-    );
-    return preview.ok ? preview.preview : undefined;
-  }
-
-  return undefined;
 }
 
 function createApprovalRequiredMessage(
@@ -1152,69 +992,14 @@ function createApprovalRequiredMessage(
   args: unknown,
 ) {
   if (toolName === "save_memory") {
-    const content =
-      isRecord(args) && typeof args.content === "string"
-        ? `：${args.content}`
+    const category =
+      isRecord(args) && typeof args.category === "string" && args.category.trim()
+        ? `（分类：${args.category.trim()}）`
         : "";
-    return `需要你确认后才会保存这条长期记忆${content}`;
+    return `需要你确认后才会${getApprovalActionLabel(toolName)}${category}。`;
   }
 
-  if (toolName === "write_file") {
-    return `需要你确认后才会写入文件${formatApprovalPathSuffix(args)}。`;
-  }
-
-  if (toolName === "edit_file") {
-    return `需要你确认后才会编辑文件${formatApprovalPathSuffix(args)}。`;
-  }
-
-  if (toolName === "delete_file") {
-    return `需要你确认后才会删除文件${formatApprovalPathSuffix(args)}。`;
-  }
-
-  const memoryId =
-    isRecord(args) && typeof args.memoryId === "string"
-      ? ` ${args.memoryId}`
-      : "";
-  return `需要你确认后才会删除长期记忆${memoryId}。`;
-}
-
-function isFilesystemMutationToolName(
-  toolName: ApprovalGatedToolName,
-): toolName is Extract<
-  ApprovalGatedToolName,
-  "delete_file" | "edit_file" | "write_file"
-> {
-  return (
-    toolName === "write_file" ||
-    toolName === "edit_file" ||
-    toolName === "delete_file"
-  );
-}
-
-function getApprovalActionLabel(toolName: ApprovalGatedToolName) {
-  if (toolName === "save_memory") {
-    return "保存记忆";
-  }
-
-  if (toolName === "delete_memory") {
-    return "删除记忆";
-  }
-
-  if (toolName === "write_file") {
-    return "写入文件";
-  }
-
-  if (toolName === "edit_file") {
-    return "编辑文件";
-  }
-
-  return "删除文件";
-}
-
-function getApprovalRejectDescription(toolName: ApprovalGatedToolName) {
-  return toolName === "save_memory" || toolName === "delete_memory"
-    ? "取消本次工具调用，不修改长期记忆。"
-    : "取消本次工具调用，不修改文件。";
+  return `需要你确认后才会${getApprovalActionLabel(toolName)}${formatApprovalPathSuffix(args)}。`;
 }
 
 function formatApprovalPathSuffix(args: unknown) {

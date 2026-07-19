@@ -9,6 +9,7 @@ import { getPostgresPool, hasDatabaseUrl } from "./postgres";
 export type PendingActionScope = {
   tenantHashId: string;
   userHashId: string;
+  workspaceId: string;
 };
 
 export type StoredPendingAction = {
@@ -18,6 +19,7 @@ export type StoredPendingAction = {
   createdAt: string;
   decidedAt: string | null;
   executedAt: string | null;
+  executionStartedAt: string | null;
   expiresAt: string;
   reason: string | null;
   result: ApprovalExecutionResponse | null;
@@ -25,6 +27,7 @@ export type StoredPendingAction = {
   threadId: string;
   toolCallId: string;
   toolName: ApprovalGatedToolName;
+  workspaceId: string | null;
 };
 
 type PendingActionRow = {
@@ -34,6 +37,7 @@ type PendingActionRow = {
   created_at: Date | string;
   decided_at: Date | string | null;
   executed_at: Date | string | null;
+  execution_started_at: Date | string | null;
   expires_at: Date | string;
   reason: string | null;
   result: unknown;
@@ -41,6 +45,7 @@ type PendingActionRow = {
   thread_id: string;
   tool_call_id: string;
   tool_name: ApprovalGatedToolName;
+  workspace_id: string | null;
 };
 
 let setupPromise: Promise<void> | null = null;
@@ -91,6 +96,7 @@ export async function createPendingAction(
       INSERT INTO public.assistant_pending_actions (
         tenant_hash_id,
         user_hash_id,
+        workspace_id,
         thread_id,
         action_id,
         agent_id,
@@ -99,8 +105,9 @@ export async function createPendingAction(
         args,
         expires_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
       RETURNING
+        workspace_id,
         thread_id,
         action_id,
         agent_id,
@@ -113,11 +120,13 @@ export async function createPendingAction(
         created_at,
         decided_at,
         executed_at,
+        execution_started_at,
         expires_at
     `,
     [
       scope.tenantHashId,
       scope.userHashId,
+      scope.workspaceId,
       threadId,
       actionId,
       agentId,
@@ -128,7 +137,7 @@ export async function createPendingAction(
     ],
   );
 
-  return rowToStoredPendingAction(result.rows[0]);
+  return result.rows[0] ? rowToStoredPendingAction(result.rows[0]) : null;
 }
 
 export async function decidePendingAction(
@@ -155,24 +164,27 @@ export async function decidePendingAction(
     `
       UPDATE public.assistant_pending_actions
       SET
+        workspace_id = $3,
         status = CASE
           WHEN expires_at <= NOW() THEN 'expired'
-          WHEN $5::boolean THEN 'approved'
+          WHEN $6::boolean THEN 'approved'
           ELSE 'rejected'
         END,
         decided_at = CASE
           WHEN decided_at IS NULL THEN NOW()
           ELSE decided_at
         END,
-        reason = $6,
+        reason = $7,
         result = result
       WHERE
         tenant_hash_id = $1
         AND user_hash_id = $2
-        AND thread_id = $3
-        AND action_id = $4
+        AND workspace_id = $3
+        AND thread_id = $4
+        AND action_id = $5
         AND status = 'pending'
       RETURNING
+        workspace_id,
         thread_id,
         action_id,
         agent_id,
@@ -185,11 +197,13 @@ export async function decidePendingAction(
         created_at,
         decided_at,
         executed_at,
+        execution_started_at,
         expires_at
     `,
     [
       scope.tenantHashId,
       scope.userHashId,
+      scope.workspaceId,
       threadId,
       actionId,
       approved,
@@ -205,6 +219,127 @@ export async function decidePendingAction(
     actionId,
     threadId,
   });
+}
+
+export async function updatePendingActionArgs(
+  scope: PendingActionScope,
+  {
+    actionId,
+    args,
+    threadId,
+  }: {
+    actionId: string;
+    args: unknown;
+    threadId: string;
+  },
+) {
+  if (!hasDatabaseUrl()) {
+    return null;
+  }
+
+  await ensurePendingActionStore();
+
+  const result = await getPostgresPool().query<PendingActionRow>(
+    `
+      UPDATE public.assistant_pending_actions
+      SET
+        workspace_id = $3,
+        args = $6::jsonb
+      WHERE
+        tenant_hash_id = $1
+        AND user_hash_id = $2
+        AND workspace_id = $3
+        AND thread_id = $4
+        AND action_id = $5
+        AND status = 'pending'
+      RETURNING
+        workspace_id,
+        thread_id,
+        action_id,
+        agent_id,
+        tool_name,
+        tool_call_id,
+        args,
+        status,
+        result,
+        reason,
+        created_at,
+        decided_at,
+        executed_at,
+        execution_started_at,
+        expires_at
+    `,
+    [
+      scope.tenantHashId,
+      scope.userHashId,
+      scope.workspaceId,
+      threadId,
+      actionId,
+      JSON.stringify(toJsonRecord(args)),
+    ],
+  );
+
+  return result.rows[0] ? rowToStoredPendingAction(result.rows[0]) : null;
+}
+
+export async function claimPendingActionExecution(
+  scope: PendingActionScope,
+  {
+    actionId,
+    threadId,
+  }: {
+    actionId: string;
+    threadId: string;
+  },
+) {
+  if (!hasDatabaseUrl()) {
+    return null;
+  }
+
+  await ensurePendingActionStore();
+
+  const result = await getPostgresPool().query<PendingActionRow>(
+    `
+      UPDATE public.assistant_pending_actions
+      SET
+        workspace_id = $3,
+        status = 'executing',
+        execution_started_at = NOW()
+      WHERE
+        tenant_hash_id = $1
+        AND user_hash_id = $2
+        AND workspace_id = $3
+        AND thread_id = $4
+        AND action_id = $5
+        AND status = 'approved'
+        AND expires_at > NOW()
+      RETURNING
+        workspace_id,
+        thread_id,
+        action_id,
+        agent_id,
+        tool_name,
+        tool_call_id,
+        args,
+        status,
+        result,
+        reason,
+        created_at,
+        decided_at,
+        executed_at,
+        execution_started_at,
+        expires_at
+    `,
+    [
+      scope.tenantHashId,
+      scope.userHashId,
+      scope.workspaceId,
+      threadId,
+      actionId,
+    ],
+  );
+
+  return result.rows[0] ? rowToStoredPendingAction(result.rows[0]) : null;
 }
 
 export async function markPendingActionExecuted(
@@ -267,6 +402,33 @@ export async function markPendingActionRejected(
   });
 }
 
+export async function markPendingActionExpired(
+  scope: PendingActionScope,
+  {
+    actionId,
+    result,
+    threadId,
+  }: {
+    actionId: string;
+    result: ApprovalExecutionResponse;
+    threadId: string;
+  },
+) {
+  return updatePendingActionResult(scope, {
+    actionId,
+    result,
+    status: "expired",
+    threadId,
+  });
+}
+
+export async function getPendingActionForScope(
+  scope: PendingActionScope,
+  args: { actionId: string; threadId: string },
+) {
+  return getPendingAction(scope, args);
+}
+
 async function getPendingAction(
   scope: PendingActionScope,
   {
@@ -286,6 +448,7 @@ async function getPendingAction(
   const result = await getPostgresPool().query<PendingActionRow>(
     `
       SELECT
+        workspace_id,
         thread_id,
         action_id,
         agent_id,
@@ -298,16 +461,18 @@ async function getPendingAction(
         created_at,
         decided_at,
         executed_at,
+        execution_started_at,
         expires_at
       FROM public.assistant_pending_actions
       WHERE
         tenant_hash_id = $1
         AND user_hash_id = $2
-        AND thread_id = $3
-        AND action_id = $4
+        AND workspace_id = $3
+        AND thread_id = $4
+        AND action_id = $5
       LIMIT 1
     `,
-    [scope.tenantHashId, scope.userHashId, threadId, actionId],
+    [scope.tenantHashId, scope.userHashId, scope.workspaceId, threadId, actionId],
   );
 
   return result.rows[0] ? rowToStoredPendingAction(result.rows[0]) : null;
@@ -323,7 +488,10 @@ async function updatePendingActionResult(
   }: {
     actionId: string;
     result: ApprovalExecutionResponse;
-    status: Extract<ApprovalActionStatus, "executed" | "failed" | "rejected">;
+    status: Extract<
+      ApprovalActionStatus,
+      "executed" | "failed" | "rejected" | "expired"
+    >;
     threadId: string;
   },
 ) {
@@ -337,18 +505,26 @@ async function updatePendingActionResult(
     `
       UPDATE public.assistant_pending_actions
       SET
-        status = $5,
-        result = $6::jsonb,
+        workspace_id = $3,
+        status = $6,
+        result = $7::jsonb,
         executed_at = CASE
-          WHEN $5 IN ('executed', 'failed') THEN NOW()
+          WHEN $6 IN ('executed', 'failed') THEN NOW()
           ELSE executed_at
         END
       WHERE
         tenant_hash_id = $1
         AND user_hash_id = $2
-        AND thread_id = $3
-        AND action_id = $4
+        AND workspace_id = $3
+        AND thread_id = $4
+        AND action_id = $5
+        AND result IS NULL
+        AND status = CASE
+          WHEN $6 IN ('executed', 'failed') THEN 'executing'
+          ELSE $6
+        END
       RETURNING
+        workspace_id,
         thread_id,
         action_id,
         agent_id,
@@ -361,11 +537,13 @@ async function updatePendingActionResult(
         created_at,
         decided_at,
         executed_at,
+        execution_started_at,
         expires_at
     `,
     [
       scope.tenantHashId,
       scope.userHashId,
+      scope.workspaceId,
       threadId,
       actionId,
       status,
@@ -386,6 +564,7 @@ async function setupAssistantPendingActionsTable() {
       id BIGSERIAL PRIMARY KEY,
       tenant_hash_id TEXT NOT NULL,
       user_hash_id TEXT NOT NULL,
+      workspace_id TEXT,
       thread_id TEXT NOT NULL,
       action_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
@@ -398,15 +577,43 @@ async function setupAssistantPendingActionsTable() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       decided_at TIMESTAMPTZ,
       executed_at TIMESTAMPTZ,
+      execution_started_at TIMESTAMPTZ,
       expires_at TIMESTAMPTZ NOT NULL
     )
   `);
 
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS assistant_pending_actions_scope_action_idx
+    ALTER TABLE public.assistant_pending_actions
+    ADD COLUMN IF NOT EXISTS workspace_id TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE public.assistant_pending_actions
+    ADD COLUMN IF NOT EXISTS execution_started_at TIMESTAMPTZ
+  `);
+
+  try {
+    await pool.query(`
+      UPDATE public.assistant_pending_actions AS pending
+      SET workspace_id = threads.workspace_id
+      FROM public.assistant_threads AS threads
+      WHERE pending.workspace_id IS NULL
+        AND pending.tenant_hash_id = threads.tenant_hash_id
+        AND pending.user_hash_id = threads.user_hash_id
+        AND pending.thread_id = threads.thread_id
+        AND threads.workspace_id IS NOT NULL
+    `);
+  } catch (error) {
+    if (!isMissingTableError(error)) {
+      throw error;
+    }
+  }
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS assistant_pending_actions_workspace_scope_action_idx
     ON public.assistant_pending_actions (
       tenant_hash_id,
       user_hash_id,
+      workspace_id,
       thread_id,
       action_id
     )
@@ -426,6 +633,9 @@ function rowToStoredPendingAction(row: PendingActionRow): StoredPendingAction {
     createdAt: toIsoString(row.created_at),
     decidedAt: row.decided_at ? toIsoString(row.decided_at) : null,
     executedAt: row.executed_at ? toIsoString(row.executed_at) : null,
+    executionStartedAt: row.execution_started_at
+      ? toIsoString(row.execution_started_at)
+      : null,
     expiresAt: toIsoString(row.expires_at),
     reason: row.reason,
     result: isApprovalExecutionResponse(row.result) ? row.result : null,
@@ -433,6 +643,7 @@ function rowToStoredPendingAction(row: PendingActionRow): StoredPendingAction {
     threadId: row.thread_id,
     toolCallId: row.tool_call_id,
     toolName: row.tool_name,
+    workspaceId: row.workspace_id,
   };
 }
 
@@ -463,4 +674,13 @@ function isApprovalExecutionResponse(
 
 function toIsoString(value: Date | string) {
   return typeof value === "string" ? value : value.toISOString();
+}
+
+function isMissingTableError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "42P01"
+  );
 }

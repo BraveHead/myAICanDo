@@ -795,6 +795,13 @@
                 <code>write_file/delete_file/save_memory/delete_memory</code> 都会产生可审查预览；拒绝后 agent 能继续解释替代方案。
               </div>
             </div>
+            <div class="note">
+              <strong>M7 实施边界：</strong>
+              本轮只覆盖 <code>write_file</code>、<code>edit_file</code>、<code>delete_file</code>、<code>save_memory</code>、<code>delete_memory</code>。
+              审批策略统一进入 registry，pending action 增加 <code>workspace_id</code> 和 <code>executing</code> 原子领取状态；支持确认、拒绝、修改参数并执行、提供指导四种决策。
+              guidance 不直接恢复原 checkpoint，而是拒绝当前副作用后，由前端在相同 workspace/thread 发起新的普通聊天回合。
+              <code>task</code> 和外部 API 只保留扩展点，M7 不启用其审批执行。
+            </div>
           </div>
         </article>
 
@@ -847,20 +854,20 @@
     <section id="first">
       <h2 class="section"><span class="num">§5</span>第一步建议</h2>
       <div class="callout warn">
-        <strong>下一步建议从 M6：Memory v2 开始。</strong>
-        M0-M5 的 Harness、filesystem、planning、context offloading、subagents 和 skills 已形成基础；当前应先把 workspace 边界、项目记忆和用户记忆统一到运行上下文，再继续扩展 HITL v2 和 streaming v2。
+        <strong>下一步建议从 M7：Human-in-the-loop v2 开始。</strong>
+        M0-M6 的 Harness、filesystem、planning、context offloading、subagents、skills 和 workspace memory 已形成基础；当前应先统一敏感工具审批、执行幂等和 workspace scope，再继续扩展 Streaming v2。
       </div>
 
-      <h3>M6 的拆分顺序</h3>
+      <h3>M7 的拆分顺序</h3>
       <ol>
-        <li>先完成 workspace 表、默认 workspace 和 thread/todo 历史回填，所有访问先经过 tenant/workspace resolver。</li>
-        <li>再完成 workspace API、规范路由、旧 URL 重定向、workspace selector 和当前 workspace 的 thread 列表。</li>
-        <li>实现只读 <code>AGENTS.md</code> loader，拒绝根目录文件、symlink、越权路径、损坏和超限内容。</li>
-        <li>把 user memory、project memory 和 harness memory 组装为 <code>MemoryManifest</code>，统一接入 agent、coordinator、subagent 和 fallback model。</li>
-        <li>补齐 tenant/workspace 隔离、checkpoint 兼容、approval 跨 workspace 拒绝和页面回归验收，再进入 M7。</li>
+        <li>先建立审批 policy registry，统一五类文件/用户记忆 mutation 的参数校验、预览和执行器。</li>
+        <li>扩展 pending action 的 workspace scope，增加历史 workspace 回填、<code>executing</code> 原子领取和重复提交保护。</li>
+        <li>扩展 approvals API，兼容旧 <code>approved</code> 请求，并支持 approve、reject、edit_args、guidance 四种决策。</li>
+        <li>调整 Agent runner、SSE 和审批卡片，增加参数编辑与 guidance 输入；guidance 通过普通 chat 回合继续执行。</li>
+        <li>补齐 tenant/workspace/thread 隔离、幂等执行、过期处理和 Chrome 回归验收，再进入 M8 Streaming v2。</li>
       </ol>
 
-      <h3>M6 关键改动文件</h3>
+      <h3>M7 关键改动文件</h3>
       <table>
         <thead>
           <tr>
@@ -870,24 +877,24 @@
         </thead>
         <tbody>
           <tr>
-            <td><code>src/lib/server/workspace-store.ts</code></td>
-            <td>workspace 实体、默认 workspace、创建/列表和 tenant 归属。</td>
+            <td><code>src/lib/approval-actions.ts</code><br><code>src/lib/approval-policy.ts</code></td>
+            <td>审批决策、工具策略 registry、参数校验、预览和统一执行器。</td>
           </tr>
           <tr>
-            <td><code>src/lib/server/thread-store/persistence.ts</code><br><code>src/lib/agent/harness/planning/todo-store.ts</code></td>
-            <td>thread/todo 增加 workspace 维度，历史 null 数据按当前 tenant/user 的默认 workspace 回填。</td>
+            <td><code>src/lib/server/pending-action-store.ts</code></td>
+            <td>pending action 增加 workspace scope、历史回填、executing 原子领取和终态缓存。</td>
           </tr>
           <tr>
-            <td><code>src/lib/agent/harness/memory/</code><br><code>src/lib/agent/harness/context/prompt.ts</code></td>
-            <td>安全读取 workspace <code>AGENTS.md</code>，构建并渲染 user/project/harness 三段 MemoryManifest。</td>
+            <td><code>src/app/api/tenants/[tenantId]/chat/approvals/route.ts</code></td>
+            <td>审批鉴权、scope 校验、四种决策、幂等执行和 guidance follow-up。</td>
           </tr>
           <tr>
-            <td><code>src/app/api/tenants/[tenantId]/chat/route.ts</code><br><code>src/lib/agent/core/agent-runner.ts</code></td>
-            <td>校验 workspace、注入 manifest、扩展 checkpoint namespace 并兼容旧 key。</td>
+            <td><code>src/lib/agent/core/agent-runner.ts</code><br><code>src/components/assistant/chat-runtime-provider.tsx</code><br><code>src/components/assistant/chat-workspace.tsx</code></td>
+            <td>requires_action 选项、参数编辑、guidance 普通聊天回合和审批状态展示。</td>
           </tr>
           <tr>
-            <td><code>src/components/assistant/chat-workspace.tsx</code><br><code>src/lib/thread-storage.ts</code></td>
-            <td>workspace selector、当前 workspace thread 列表、请求和本地 active thread scope。</td>
+            <td><code>tests/approval-policy.test.mjs</code><br><code>tests/approval-decision.test.mjs</code></td>
+            <td>策略 registry、审批协议、非法参数、edit_args、guidance 和 scope 回归。</td>
           </tr>
         </tbody>
       </table>

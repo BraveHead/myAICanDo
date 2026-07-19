@@ -1,44 +1,47 @@
 import type {
   ApprovalActionStatus,
+  ApprovalDecision,
   ApprovalExecutionResponse,
   ApprovalGatedToolName,
   ApprovalToolResult,
 } from "@/lib/approval-actions";
 import {
-  deleteUserMemory,
-  saveUserMemory,
-  type DeleteUserMemoryResult,
-  type SaveUserMemoryResult,
-} from "@/lib/agent/services/memory-service";
-import {
-  deleteFilesystemFile,
-  editFilesystemFile,
-  writeFilesystemFile,
-  type DeleteFilesystemFileResult,
-  type EditFilesystemFileResult,
-  type WriteFilesystemFileResult,
-} from "@/lib/agent/services/filesystem-service";
+  executeApprovalTool,
+  getApprovalPolicy,
+  getApprovalSubject,
+} from "@/lib/approval-policy";
 import { isSupportedAgent } from "@/lib/agent/shared/agent-ids";
 import { authErrorResponse, requireTenantAccess } from "@/lib/server/saas";
 import { requireWorkspaceAccess } from "@/lib/server/workspace-context";
 import { getStoredThreadWorkspaceId } from "@/lib/server/thread-store/persistence";
 import {
+  appendThreadMessages,
+} from "@/lib/server/thread-store";
+import type { ThreadScope } from "@/lib/server/thread-store/persistence";
+import {
+  claimPendingActionExecution,
   decidePendingAction,
+  getPendingActionForScope,
   hasPendingActionStore,
+  markPendingActionExpired,
   markPendingActionExecuted,
   markPendingActionFailed,
   markPendingActionRejected,
+  updatePendingActionArgs,
+  type PendingActionScope,
   type StoredPendingAction,
 } from "@/lib/server/pending-action-store";
 import { createRequestLogger, toLogError } from "@/lib/server/logger";
-import { appendThreadMessages } from "@/lib/server/thread-store";
 
 type ApprovalRequestBody = {
-  approvalId?: string;
-  approved?: boolean;
-  reason?: string;
-  threadId?: string;
-  workspaceId?: string;
+  approvalId?: unknown;
+  approved?: unknown;
+  args?: unknown;
+  decision?: unknown;
+  guidance?: unknown;
+  reason?: unknown;
+  threadId?: unknown;
+  workspaceId?: unknown;
 };
 
 type ApprovalRouteContext = {
@@ -47,17 +50,22 @@ type ApprovalRouteContext = {
   }>;
 };
 
-type MemoryMutationResult = SaveUserMemoryResult | DeleteUserMemoryResult;
-type FilesystemMutationResult =
-  | DeleteFilesystemFileResult
-  | EditFilesystemFileResult
-  | WriteFilesystemFileResult;
-type ToolMutationResult = FilesystemMutationResult | MemoryMutationResult;
+type NormalizedApprovalRequest = {
+  approvalId: string;
+  args?: unknown;
+  decision: ApprovalDecision;
+  guidance?: string;
+  reason?: string;
+  threadId: string;
+  workspaceId?: string;
+};
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const APPROVAL_ROUTE = "/api/tenants/[tenantId]/chat/approvals";
+const MAX_GUIDANCE_LENGTH = 2_000;
+const MAX_REASON_LENGTH = 2_000;
 
 export async function POST(request: Request, context: ApprovalRouteContext) {
   const requestStartedAt = Date.now();
@@ -68,8 +76,8 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
     route: APPROVAL_ROUTE,
     tenantId,
   });
-  let access;
 
+  let access;
   try {
     access = await requireTenantAccess(tenantId);
   } catch (error) {
@@ -85,141 +93,83 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
       { err: toLogError(error) },
       "approval request body is invalid",
     );
-    return Response.json(
-      {
-        error: {
-          code: "invalid_json",
-          message: "请求体必须是合法 JSON。",
-        },
-      },
-      { status: 400 },
-    );
+    return errorResponse("invalid_json", "请求体必须是合法 JSON。", 400);
   }
 
-  const approvalId = normalizeNonEmptyString(body.approvalId);
-  const threadId = normalizeNonEmptyString(body.threadId);
-  if (!approvalId || !threadId || typeof body.approved !== "boolean") {
-    return Response.json(
-      {
-        error: {
-          code: "invalid_approval_request",
-          message: "缺少 threadId、approvalId 或 approved。",
-        },
-      },
-      { status: 400 },
+  const normalized = normalizeApprovalRequest(body);
+  if (!normalized.ok) {
+    return errorResponse(
+      normalized.code,
+      normalized.message,
+      normalized.status,
     );
   }
 
   if (!hasPendingActionStore()) {
-    return Response.json(
-      {
-        error: {
-          code: "pending_action_store_unavailable",
-          message: "未配置 DATABASE_URL，无法执行人工确认。",
-        },
-      },
-      { status: 500 },
+    return errorResponse(
+      "pending_action_store_unavailable",
+      "未配置 DATABASE_URL，无法执行人工确认。",
+      500,
     );
   }
 
-  const storedWorkspaceId = await getStoredThreadWorkspaceId(access, threadId);
+  const storedWorkspaceId = await getStoredThreadWorkspaceId(
+    access,
+    normalized.value.threadId,
+  );
   if (!storedWorkspaceId) {
-    return Response.json(
-      {
-        error: {
-          code: "thread_not_found",
-          message: "线程不存在或未绑定工作区。",
-        },
-      },
-      { status: 404 },
+    return errorResponse(
+      "thread_not_found",
+      "线程不存在或未绑定工作区。",
+      404,
     );
   }
 
   if (
-    body.workspaceId &&
-    body.workspaceId !== storedWorkspaceId
+    normalized.value.workspaceId &&
+    normalized.value.workspaceId !== storedWorkspaceId
   ) {
-    return Response.json(
-      {
-        error: {
-          code: "thread_workspace_mismatch",
-          message: "确认请求不能跨工作区执行。",
-        },
-      },
-      { status: 403 },
+    return errorResponse(
+      "thread_workspace_mismatch",
+      "确认请求不能跨工作区执行。",
+      403,
     );
   }
 
   let workspaceAccess;
   try {
-    workspaceAccess = await requireWorkspaceAccess(
-      tenantId,
-      body.workspaceId ?? storedWorkspaceId,
-    );
+    workspaceAccess = await requireWorkspaceAccess(tenantId, storedWorkspaceId);
   } catch (error) {
     return authErrorResponse(error);
   }
 
-  const scope = {
+  const scope: PendingActionScope = {
     tenantHashId: access.tenantHashId,
     userHashId: access.userHashId,
-  };
-  const threadScope = {
-    tenantHashId: workspaceAccess.tenantHashId,
-    userHashId: workspaceAccess.userHashId,
     workspaceId: workspaceAccess.workspace.workspaceId,
   };
+  const threadScope: ThreadScope = scope;
   const requestLogger = createRequestLogger({
-    approvalId,
+    approvalId: normalized.value.approvalId,
     requestId,
     route: APPROVAL_ROUTE,
     tenantHashId: access.tenantHashId,
-    threadId,
+    threadId: normalized.value.threadId,
     userHashId: access.userHashId,
-    workspaceId: workspaceAccess.workspace.workspaceId,
+    workspaceId: scope.workspaceId,
   });
 
-  const action = await decidePendingAction(scope, {
-    actionId: approvalId,
-    approved: body.approved,
-    reason: body.reason,
-    threadId,
+  let action = await getPendingActionForScope(scope, {
+    actionId: normalized.value.approvalId,
+    threadId: normalized.value.threadId,
   });
-
   if (!action) {
     requestLogger.warn("approval action not found");
-    return Response.json(
-      {
-        error: {
-          code: "approval_not_found",
-          message: "确认请求不存在或不属于当前租户/用户/thread。",
-        },
-      },
-      { status: 404 },
+    return errorResponse(
+      "approval_not_found",
+      "确认请求不存在或不属于当前租户/用户/workspace/thread。",
+      404,
     );
-  }
-
-  if (action.status === "expired") {
-    const expiredResponse = createTerminalApprovalResponse({
-      action,
-      finalText: "这次确认已过期，请重新发起记忆操作。",
-      isError: true,
-      ok: false,
-      status: "expired",
-      toolResult: createToolErrorResult({
-        code: "approval_expired",
-        message: "The approval action has expired.",
-        summary: "这次确认已过期，请重新发起记忆操作。",
-      }),
-    });
-    await persistApprovalText({
-      action,
-      response: expiredResponse,
-      scope: threadScope,
-      threadId,
-    });
-    requestLogger.warn("approval action expired");
-    return Response.json(expiredResponse, { status: 409 });
   }
 
   if (action.result && isTerminalStatus(action.status)) {
@@ -233,74 +183,235 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
     return Response.json(action.result);
   }
 
-  if (action.status === "rejected") {
-    const response = createRejectedApprovalResponse({
-      action,
-      approvalId,
-      reason: body.reason,
-    });
-    await markPendingActionRejected(scope, {
-      actionId: approvalId,
+  if (action.status === "executing") {
+    return errorResponse(
+      "approval_execution_in_progress",
+      "该确认请求正在执行，请勿重复提交。",
+      409,
+    );
+  }
+
+  if (action.status === "expired" || isExpired(action.expiresAt)) {
+    const response = createExpiredApprovalResponse(action);
+    const expiredAction = await markPendingActionExpired(scope, {
+      actionId: action.actionId,
       result: response,
-      threadId,
+      threadId: action.threadId,
     });
-    await persistApprovalText({
-      action,
-      response,
-      scope: threadScope,
-      threadId,
+    if (expiredAction) {
+      await persistApprovalText({ action, response, scope });
+    } else {
+      const latestAction = await getPendingActionForScope(scope, {
+        actionId: action.actionId,
+        threadId: action.threadId,
+      });
+      if (latestAction?.result) {
+        return Response.json(latestAction.result, { status: 409 });
+      }
+    }
+    return Response.json(response, { status: 409 });
+  }
+
+  if (normalized.value.decision === "edit_args") {
+    const policy = getApprovalPolicy(action.toolName);
+    const validation = policy?.validateArgs(normalized.value.args);
+    if (!policy || !policy.supportsEditArgs || !validation?.ok) {
+      return errorResponse(
+        "invalid_tool_args",
+        validation?.ok === false
+          ? validation.message
+          : "当前工具不支持修改参数。",
+        400,
+      );
+    }
+
+    const updatedAction = await updatePendingActionArgs(scope, {
+      actionId: action.actionId,
+      args: validation.value,
+      threadId: action.threadId,
     });
+    if (!updatedAction) {
+      return errorResponse(
+        "approval_not_pending",
+        "确认请求已被其他操作处理，不能修改参数。",
+        409,
+      );
+    }
+    action = updatedAction;
+  }
+
+  if (
+    normalized.value.decision === "reject" ||
+    normalized.value.decision === "guidance"
+  ) {
+    const decidedAction = await decidePendingAction(scope, {
+      actionId: action.actionId,
+      approved: false,
+      reason:
+        normalized.value.guidance ?? normalized.value.reason,
+      threadId: action.threadId,
+    });
+    if (!decidedAction) {
+      return errorResponse(
+        "approval_not_found",
+        "确认请求不存在或不属于当前租户/用户/workspace/thread。",
+        404,
+      );
+    }
+    if (decidedAction.status === "expired") {
+      const response = createExpiredApprovalResponse(decidedAction);
+      const expiredAction = await markPendingActionExpired(scope, {
+        actionId: decidedAction.actionId,
+        result: response,
+        threadId: decidedAction.threadId,
+      });
+      if (expiredAction) {
+        await persistApprovalText({ action: decidedAction, response, scope });
+      } else if (decidedAction.result) {
+        return Response.json(decidedAction.result, { status: 409 });
+      }
+      return Response.json(response, { status: 409 });
+    }
+    if (decidedAction.status === "executing") {
+      return errorResponse(
+        "approval_execution_in_progress",
+        "该确认请求正在执行，请勿重复提交。",
+        409,
+      );
+    }
+    if (decidedAction.status !== "rejected") {
+      return errorResponse(
+        "approval_not_pending",
+        `确认请求当前状态为 ${decidedAction.status}，不能拒绝。`,
+        409,
+      );
+    }
+    if (decidedAction.result) {
+      return Response.json(decidedAction.result);
+    }
+
+    const response = createRejectedApprovalResponse({
+      action: decidedAction,
+      decision: normalized.value.decision,
+      guidance: normalized.value.guidance,
+      reason: normalized.value.reason,
+    });
+    const rejectedAction = await markPendingActionRejected(scope, {
+      actionId: decidedAction.actionId,
+      result: response,
+      threadId: decidedAction.threadId,
+    });
+    if (!rejectedAction) {
+      const latestAction = await getPendingActionForScope(scope, {
+        actionId: decidedAction.actionId,
+        threadId: decidedAction.threadId,
+      });
+      if (latestAction?.result) {
+        return Response.json(latestAction.result);
+      }
+      return errorResponse(
+        "approval_not_pending",
+        "确认请求已被其他操作处理，不能重复拒绝。",
+        409,
+      );
+    }
+    await persistApprovalText({ action: decidedAction, response, scope });
     requestLogger.info(
       {
+        decision: normalized.value.decision,
         durationMs: Date.now() - requestStartedAt,
+        status: response.status,
       },
       "approval action rejected",
     );
     return Response.json(response);
   }
 
-  if (action.status !== "approved") {
-    return Response.json(
-      {
-        error: {
-          code: "approval_not_pending",
-          message: `确认请求当前状态为 ${action.status}，不能执行。`,
-        },
-      },
-      { status: 409 },
+  const decidedAction = await decidePendingAction(scope, {
+    actionId: action.actionId,
+    approved: true,
+    reason: normalized.value.reason,
+    threadId: action.threadId,
+  });
+  if (!decidedAction) {
+    return errorResponse(
+      "approval_not_found",
+      "确认请求不存在或不属于当前租户/用户/workspace/thread。",
+      404,
     );
   }
 
-  const response = await executeApprovedAction(action, {
-    tenantHashId: access.tenantHashId,
-    userHashId: access.userHashId,
-    workspaceId: workspaceAccess.workspace.workspaceId,
+  if (decidedAction.status === "expired") {
+    const response = createExpiredApprovalResponse(decidedAction);
+    const expiredAction = await markPendingActionExpired(scope, {
+      actionId: decidedAction.actionId,
+      result: response,
+      threadId: decidedAction.threadId,
+    });
+    if (expiredAction) {
+      await persistApprovalText({ action: decidedAction, response, scope });
+    } else if (decidedAction.result) {
+      return Response.json(decidedAction.result, { status: 409 });
+    }
+    return Response.json(response, { status: 409 });
+  }
+
+  if (decidedAction.status !== "approved") {
+    return errorResponse(
+      "approval_not_pending",
+      `确认请求当前状态为 ${decidedAction.status}，不能执行。`,
+      409,
+    );
+  }
+
+  const claimedAction = await claimPendingActionExecution(scope, {
+    actionId: decidedAction.actionId,
+    threadId: decidedAction.threadId,
   });
+  if (!claimedAction) {
+    const latestAction = await getPendingActionForScope(scope, {
+      actionId: decidedAction.actionId,
+      threadId: decidedAction.threadId,
+    });
+    if (latestAction?.result && isTerminalStatus(latestAction.status)) {
+      return Response.json(latestAction.result);
+    }
+    if (latestAction?.status === "executing") {
+      return errorResponse(
+        "approval_execution_in_progress",
+        "该确认请求正在执行，请勿重复提交。",
+        409,
+      );
+    }
+    return errorResponse(
+      "approval_execution_unavailable",
+      "确认请求已过期或无法领取执行权。",
+      409,
+    );
+  }
+
+  const response = await executeApprovedAction(claimedAction, threadScope);
   if (response.ok) {
     await markPendingActionExecuted(scope, {
-      actionId: approvalId,
+      actionId: claimedAction.actionId,
       result: response,
-      threadId,
+      threadId: claimedAction.threadId,
     });
   } else {
     await markPendingActionFailed(scope, {
-      actionId: approvalId,
+      actionId: claimedAction.actionId,
       result: response,
-      threadId,
+      threadId: claimedAction.threadId,
     });
   }
-  await persistApprovalText({
-    action,
-    response,
-    scope: threadScope,
-    threadId,
-  });
+  await persistApprovalText({ action: claimedAction, response, scope });
 
   requestLogger.info(
     {
+      decision: normalized.value.decision,
       durationMs: Date.now() - requestStartedAt,
-      ok: response.ok,
-      toolName: action.toolName,
+      status: response.status,
+      toolName: claimedAction.toolName,
     },
     "approval action executed",
   );
@@ -310,115 +421,24 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
 
 async function executeApprovedAction(
   action: StoredPendingAction,
-  threadScope: { tenantHashId: string; userHashId: string; workspaceId: string },
+  threadScope: ThreadScope,
 ): Promise<ApprovalExecutionResponse> {
-  if (action.toolName === "save_memory") {
-    const input = getSaveMemoryInput(action.args);
-    if (!input.ok) {
-      return createInvalidArgsResponse(action, input.message);
-    }
-
-    return createToolMutationResponse({
-      action,
-      result: await saveUserMemory(
-        {
-          threadId: action.threadId,
-          threadScope,
-        },
-        input.value,
-      ),
-    });
-  }
-
-  if (action.toolName === "delete_memory") {
-    const input = getDeleteMemoryInput(action.args);
-    if (!input.ok) {
-      return createInvalidArgsResponse(action, input.message);
-    }
-
-    return createToolMutationResponse({
-      action,
-      result: await deleteUserMemory(
-        {
-          threadId: action.threadId,
-          threadScope,
-        },
-        input.value.memoryId,
-      ),
-    });
-  }
-
-  if (action.toolName === "write_file") {
-    const input = getWriteFileInput(action.args);
-    if (!input.ok) {
-      return createInvalidArgsResponse(action, input.message);
-    }
-
-    return createToolMutationResponse({
-      action,
-      result: await writeFilesystemFile(
-        {
-          threadId: action.threadId,
-          threadScope,
-        },
-        input.value,
-      ),
-    });
-  }
-
-  if (action.toolName === "edit_file") {
-    const input = getEditFileInput(action.args);
-    if (!input.ok) {
-      return createInvalidArgsResponse(action, input.message);
-    }
-
-    return createToolMutationResponse({
-      action,
-      result: await editFilesystemFile(
-        {
-          threadId: action.threadId,
-          threadScope,
-        },
-        input.value,
-      ),
-    });
-  }
-
-  if (action.toolName === "delete_file") {
-    const input = getDeleteFileInput(action.args);
-    if (!input.ok) {
-      return createInvalidArgsResponse(action, input.message);
-    }
-
-    return createToolMutationResponse({
-      action,
-      result: await deleteFilesystemFile(
-        {
-          threadId: action.threadId,
-          threadScope,
-        },
-        input.value,
-      ),
-    });
-  }
-
-  return createInvalidArgsResponse(action, "Unsupported approval-gated tool.");
-}
-
-function createToolMutationResponse({
-  action,
-  result,
-}: {
-  action: StoredPendingAction;
-  result: ToolMutationResult;
-}): ApprovalExecutionResponse {
-  const toolResult = {
+  const result = await executeApprovalTool({
+    args: action.args,
+    context: {
+      threadId: action.threadId,
+      threadScope,
+    },
+    toolName: action.toolName,
+  });
+  const toolResult: ApprovalToolResult = {
     content: JSON.stringify(result),
     status: result.ok ? "success" : "error",
-  } satisfies ApprovalToolResult;
+  };
 
   return createTerminalApprovalResponse({
     action,
+    decision: "approve",
     finalText: result.summary,
     isError: !result.ok,
     ok: result.ok,
@@ -427,65 +447,73 @@ function createToolMutationResponse({
   });
 }
 
-function createInvalidArgsResponse(
-  action: StoredPendingAction,
-  message: string,
-): ApprovalExecutionResponse {
-  const finalText = `确认请求参数无效：${message}`;
-  return createTerminalApprovalResponse({
-    action,
-    finalText,
-    isError: true,
-    ok: false,
-    status: "failed",
-    toolResult: createToolErrorResult({
-      code: "invalid_tool_args",
-      message,
-      summary: finalText,
-    }),
-  });
-}
-
 function createRejectedApprovalResponse({
   action,
-  approvalId,
+  decision,
+  guidance,
   reason,
 }: {
-  action?: StoredPendingAction;
-  approvalId: string;
+  action: StoredPendingAction;
+  decision: Extract<ApprovalDecision, "guidance" | "reject">;
+  guidance?: string;
   reason?: string;
 }): ApprovalExecutionResponse {
-  const toolName = action?.toolName ?? "save_memory";
-  const actionLabel = getApprovalActionTypeLabel(toolName);
-  const finalText = reason?.trim()
-    ? `已取消这次${actionLabel}：${reason.trim()}`
-    : `已取消这次${actionLabel}。`;
-  const toolCallId = action?.toolCallId ?? approvalId;
+  const subject = getApprovalSubject(action.toolName);
+  const finalText =
+    decision === "guidance"
+      ? `已取消这次${subject}，不会执行原操作。已收到你的指导，请继续下一步对话。`
+      : reason
+        ? `已取消这次${subject}：${reason}`
+        : `已取消这次${subject}。`;
   const toolResult = createToolErrorResult({
     code: "approval_rejected",
-    message: reason?.trim() || "The user rejected this approval request.",
+    message: reason || "The user rejected this approval request.",
     summary: finalText,
   });
 
   return {
-    approvalId,
+    approvalId: action.actionId,
     approved: false,
+    decision,
+    ...(decision === "guidance" && guidance
+      ? { followUpMessage: guidance }
+      : {}),
     finalText,
     isError: false,
     ok: true,
     status: "rejected",
     structuredResponse: createStructuredResponse({
       finalText,
-      toolName,
+      toolName: action.toolName,
     }),
-    toolCallId,
-    toolName,
+    toolCallId: action.toolCallId,
+    toolName: action.toolName,
     toolResult,
   };
 }
 
+function createExpiredApprovalResponse(
+  action: StoredPendingAction,
+): ApprovalExecutionResponse {
+  const finalText = `这次${getApprovalSubject(action.toolName)}确认已过期，请重新发起操作。`;
+  return createTerminalApprovalResponse({
+    action,
+    decision: "reject",
+    finalText,
+    isError: true,
+    ok: false,
+    status: "expired",
+    toolResult: createToolErrorResult({
+      code: "approval_expired",
+      message: "The approval action has expired.",
+      summary: finalText,
+    }),
+  });
+}
+
 function createTerminalApprovalResponse({
   action,
+  decision,
   finalText,
   isError,
   ok,
@@ -493,6 +521,7 @@ function createTerminalApprovalResponse({
   toolResult,
 }: {
   action: StoredPendingAction;
+  decision: ApprovalDecision;
   finalText: string;
   isError: boolean;
   ok: boolean;
@@ -502,6 +531,7 @@ function createTerminalApprovalResponse({
   return {
     approvalId: action.actionId,
     approved: status === "executed" || status === "failed",
+    decision,
     finalText,
     isError,
     ok,
@@ -562,12 +592,10 @@ async function persistApprovalText({
   action,
   response,
   scope,
-  threadId,
 }: {
   action: StoredPendingAction;
   response: ApprovalExecutionResponse;
-  scope: { tenantHashId: string; userHashId: string; workspaceId: string };
-  threadId: string;
+  scope: ThreadScope;
 }) {
   await appendThreadMessages({
     agent: isSupportedAgent(action.agentId) ? action.agentId : undefined,
@@ -578,185 +606,124 @@ async function persistApprovalText({
       },
     ],
     scope,
-    threadId,
+    threadId: action.threadId,
   });
 }
 
-function getSaveMemoryInput(args: Record<string, unknown>):
-  | {
-      ok: true;
-      value: {
-        category?: string;
-        content: string;
-        metadata?: Record<string, unknown>;
-      };
-    }
-  | { ok: false; message: string } {
-  const content = typeof args.content === "string" ? args.content.trim() : "";
-  if (!content) {
+function normalizeApprovalRequest(
+  body: ApprovalRequestBody,
+):
+  | { ok: true; value: NormalizedApprovalRequest }
+  | { code: string; message: string; ok: false; status: number } {
+  const approvalId = normalizeNonEmptyString(body.approvalId);
+  const threadId = normalizeNonEmptyString(body.threadId);
+  if (!approvalId || !threadId) {
     return {
+      code: "invalid_approval_request",
+      message: "缺少 threadId 或 approvalId。",
       ok: false,
-      message: "save_memory.content must be a non-empty string.",
+      status: 400,
+    };
+  }
+
+  const decision = normalizeDecision(body);
+  if (!decision) {
+    return {
+      code: "invalid_approval_decision",
+      message: "decision 必须是 approve、reject、edit_args 或 guidance。",
+      ok: false,
+      status: 400,
+    };
+  }
+
+  const reason = normalizeBoundedString(body.reason, MAX_REASON_LENGTH);
+  const workspaceId = normalizeNonEmptyString(body.workspaceId);
+  const guidance = normalizeBoundedString(body.guidance, MAX_GUIDANCE_LENGTH);
+  if (body.reason !== undefined && reason === null) {
+    return {
+      code: "approval_reason_invalid",
+      message: `reason 不能超过 ${MAX_REASON_LENGTH} 个字符。`,
+      ok: false,
+      status: 400,
+    };
+  }
+  if (decision === "guidance" && !guidance) {
+    return {
+      code: "approval_guidance_invalid",
+      message: `guidance 必须是 1-${MAX_GUIDANCE_LENGTH} 个字符。`,
+      ok: false,
+      status: 400,
     };
   }
 
   return {
     ok: true,
     value: {
-      content,
-      ...(typeof args.category === "string"
-        ? { category: args.category }
-        : {}),
-      ...(isRecord(args.metadata)
-        ? { metadata: args.metadata }
-        : {}),
+      approvalId,
+      ...(body.args !== undefined ? { args: body.args } : {}),
+      decision,
+      ...(guidance ? { guidance } : {}),
+      ...(reason ? { reason } : {}),
+      threadId,
+      ...(workspaceId ? { workspaceId } : {}),
     },
   };
 }
 
-function getDeleteMemoryInput(args: Record<string, unknown>):
-  | {
-      ok: true;
-      value: {
-        memoryId: string;
-      };
-    }
-  | { ok: false; message: string } {
-  const memoryId =
-    typeof args.memoryId === "string" ? args.memoryId.trim() : "";
-  if (!memoryId) {
-    return {
-      ok: false,
-      message: "delete_memory.memoryId must be a non-empty string.",
-    };
+function normalizeDecision(body: ApprovalRequestBody): ApprovalDecision | null {
+  if (
+    body.decision === "approve" ||
+    body.decision === "reject" ||
+    body.decision === "edit_args" ||
+    body.decision === "guidance"
+  ) {
+    return body.decision;
   }
 
-  return {
-    ok: true,
-    value: {
-      memoryId,
-    },
-  };
+  if (typeof body.approved === "boolean") {
+    return body.approved ? "approve" : "reject";
+  }
+
+  return null;
 }
 
-function getWriteFileInput(args: Record<string, unknown>):
-  | {
-      ok: true;
-      value: {
-        content: string;
-        path: string;
-      };
-    }
-  | { ok: false; message: string } {
-  const path = normalizeNonEmptyString(args.path);
-  if (!path) {
-    return {
-      ok: false,
-      message: "write_file.path must be a non-empty string.",
-    };
+function normalizeBoundedString(value: unknown, maxLength: number) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    return null;
   }
 
-  if (typeof args.content !== "string") {
-    return {
-      ok: false,
-      message: "write_file.content must be a string.",
-    };
-  }
-
-  return {
-    ok: true,
-    value: {
-      content: args.content,
-      path,
-    },
-  };
-}
-
-function getEditFileInput(args: Record<string, unknown>):
-  | {
-      ok: true;
-      value: {
-        newText: string;
-        oldText: string;
-        path: string;
-        replaceAll?: boolean;
-      };
-    }
-  | { ok: false; message: string } {
-  const path = normalizeNonEmptyString(args.path);
-  if (!path) {
-    return {
-      ok: false,
-      message: "edit_file.path must be a non-empty string.",
-    };
-  }
-
-  const oldText = typeof args.oldText === "string" ? args.oldText : "";
-  if (!oldText) {
-    return {
-      ok: false,
-      message: "edit_file.oldText must be a non-empty string.",
-    };
-  }
-
-  if (typeof args.newText !== "string") {
-    return {
-      ok: false,
-      message: "edit_file.newText must be a string.",
-    };
-  }
-
-  return {
-    ok: true,
-    value: {
-      newText: args.newText,
-      oldText,
-      path,
-      ...(typeof args.replaceAll === "boolean"
-        ? { replaceAll: args.replaceAll }
-        : {}),
-    },
-  };
-}
-
-function getDeleteFileInput(args: Record<string, unknown>):
-  | {
-      ok: true;
-      value: {
-        path: string;
-      };
-    }
-  | { ok: false; message: string } {
-  const path = normalizeNonEmptyString(args.path);
-  if (!path) {
-    return {
-      ok: false,
-      message: "delete_file.path must be a non-empty string.",
-    };
-  }
-
-  return {
-    ok: true,
-    value: {
-      path,
-    },
-  };
-}
-
-function isTerminalStatus(status: ApprovalActionStatus) {
-  return status === "executed" || status === "rejected" || status === "failed";
-}
-
-function getApprovalActionTypeLabel(toolName: ApprovalGatedToolName) {
-  return toolName === "save_memory" || toolName === "delete_memory"
-    ? "记忆操作"
-    : "文件操作";
+  const normalized = value.trim();
+  return normalized && normalized.length <= maxLength ? normalized : null;
 }
 
 function normalizeNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+function isTerminalStatus(status: ApprovalActionStatus) {
+  return (
+    status === "executed" ||
+    status === "rejected" ||
+    status === "expired" ||
+    status === "failed"
+  );
+}
+
+function isExpired(expiresAt: string) {
+  return new Date(expiresAt).getTime() <= Date.now();
+}
+
+function errorResponse(code: string, message: string, status: number) {
+  return Response.json(
+    {
+      error: {
+        code,
+        message,
+      },
+    },
+    { status },
+  );
 }

@@ -20,6 +20,10 @@ import {
 } from "@/lib/approval-actions";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import { isChatStreamEvent } from "@/lib/chat-stream";
+import {
+  createApprovalRequestBody,
+  type ClientApprovalDecision,
+} from "@/lib/approval-decision";
 import { loadActiveThreadId } from "@/lib/thread-storage";
 
 type ApiMessage = {
@@ -86,54 +90,7 @@ export function ChatRuntimeProvider({
             signal: abortSignal,
           },
         );
-
-        if (!response.ok) {
-          throw new Error(await readErrorMessage(response));
-        }
-
-        if (!response.body) {
-          throw new Error("模型接口没有返回可读流。");
-        }
-
-        if (!isChatStreamResponse(response)) {
-          yield* readPlainTextStream(response);
-          return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        const content = createAssistantContentBuilder();
-        let buffer = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
-          }
-
-          buffer += decoder.decode(value, { stream: true });
-          const updates = consumeChatSseBuffer(buffer);
-          buffer = updates.remaining;
-
-          for (const event of updates.events) {
-            const update = content.apply(event);
-            if (update.content.length > 0) {
-              yield update.status
-                ? { content: update.content, status: update.status }
-                : { content: update.content };
-            }
-          }
-        }
-
-        buffer += decoder.decode();
-        const updates = consumeChatSseBuffer(buffer, { flush: true });
-        for (const event of updates.events) {
-          const update = content.apply(event);
-          if (update.content.length > 0) {
-            yield update.status
-              ? { content: update.content, status: update.status }
-              : { content: update.content };
-          }
-        }
+        yield* streamChatResponse(response);
       },
     }),
     [tenantHashId, workspaceId],
@@ -149,18 +106,12 @@ export function ChatRuntimeProvider({
   );
 }
 
-type ApprovalDecision = {
-  approvalId: string;
-  approved: boolean;
-  reason?: string;
-};
-
-function getApprovalDecisions(message: ThreadMessage): ApprovalDecision[] {
+function getApprovalDecisions(message: ThreadMessage): ClientApprovalDecision[] {
   if (message.role !== "assistant") {
     return [];
   }
 
-  const decisions: ApprovalDecision[] = [];
+  const decisions: ClientApprovalDecision[] = [];
   for (const part of message.content) {
     if (
       part.type !== "tool-call" ||
@@ -175,6 +126,7 @@ function getApprovalDecisions(message: ThreadMessage): ApprovalDecision[] {
     decisions.push({
       approvalId: part.approval.id,
       approved: part.approval.approved,
+      optionId: part.approval.optionId,
       reason: part.approval.reason,
     });
   }
@@ -190,7 +142,7 @@ async function* runApprovalExecutions({
   workspaceId,
 }: {
   abortSignal: AbortSignal;
-  approvalDecisions: ApprovalDecision[];
+  approvalDecisions: ClientApprovalDecision[];
   tenantHashId: string;
   threadId: string;
   workspaceId: string;
@@ -222,6 +174,33 @@ async function* runApprovalExecutions({
       reason: "unknown" as const,
     },
   };
+
+  for (const response of responses) {
+    if (!response.followUpMessage) {
+      continue;
+    }
+
+    const followUpResponse = await fetch(
+      `/api/tenants/${encodeURIComponent(tenantHashId)}/chat`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: {
+            content: response.followUpMessage,
+            role: "user",
+          },
+          threadId,
+          workspaceId,
+        }),
+        signal: abortSignal,
+      },
+    );
+
+    yield* streamChatResponse(followUpResponse);
+  }
 }
 
 async function executeApprovalDecision({
@@ -232,7 +211,7 @@ async function executeApprovalDecision({
   workspaceId,
 }: {
   abortSignal: AbortSignal;
-  approvalDecision: ApprovalDecision;
+  approvalDecision: ClientApprovalDecision;
   tenantHashId: string;
   threadId: string;
   workspaceId: string;
@@ -244,13 +223,9 @@ async function executeApprovalDecision({
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        approvalId: approvalDecision.approvalId,
-        approved: approvalDecision.approved,
-        reason: approvalDecision.reason,
-        threadId,
-        workspaceId,
-      }),
+      body: JSON.stringify(
+        createApprovalRequestBody({ approvalDecision, threadId, workspaceId }),
+      ),
       signal: abortSignal,
     },
   );
@@ -348,6 +323,56 @@ function isChatStreamResponse(response: Response) {
     .get("Content-Type")
     ?.toLowerCase()
     .includes("text/event-stream");
+}
+
+async function* streamChatResponse(response: Response) {
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  if (!response.body) {
+    throw new Error("模型接口没有返回可读流。");
+  }
+
+  if (!isChatStreamResponse(response)) {
+    yield* readPlainTextStream(response);
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const content = createAssistantContentBuilder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    const updates = consumeChatSseBuffer(buffer);
+    buffer = updates.remaining;
+
+    for (const event of updates.events) {
+      const update = content.apply(event);
+      if (update.content.length > 0) {
+        yield update.status
+          ? { content: update.content, status: update.status }
+          : { content: update.content };
+      }
+    }
+  }
+
+  buffer += decoder.decode();
+  const updates = consumeChatSseBuffer(buffer, { flush: true });
+  for (const event of updates.events) {
+    const update = content.apply(event);
+    if (update.content.length > 0) {
+      yield update.status
+        ? { content: update.content, status: update.status }
+        : { content: update.content };
+    }
+  }
 }
 
 async function* readPlainTextStream(response: Response) {
