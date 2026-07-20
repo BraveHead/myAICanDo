@@ -21,7 +21,11 @@ import {
   CheckCircle2,
   Circle,
   Code2,
+  FileMinus2,
+  FilePenLine,
+  FilePlus2,
   FolderSearch,
+  GitBranch,
   Lightbulb,
   ListChecks,
   LoaderCircle,
@@ -1055,7 +1059,9 @@ function AssistantMessage() {
               data: {
                 by_name: {
                   agent_retry: AgentRetryPart,
+                  filesystem_change: FilesystemChangePart,
                   structured_response: StructuredResponsePart,
+                  subagent_state: SubagentStatePart,
                   todo_state: TodoStatePart,
                 },
               },
@@ -1185,6 +1191,285 @@ function parseAgentRetry(data: unknown): AgentRetryData | null {
     reason: data.reason,
     recovery: "checkpoint",
   };
+}
+
+type SubagentStateData = {
+  agent: "filesystem" | "memory" | "weather";
+  durationMs?: number;
+  error?: string;
+  finishedAt?: string;
+  parentAgentId: string;
+  startedAt: string;
+  status: "running" | "completed" | "failed";
+  subtaskId: string;
+  summary?: string;
+  taskSummary: string;
+};
+
+function SubagentStatePart({ data }: DataMessagePartProps) {
+  const subagent = parseSubagentState(data);
+  if (!subagent) {
+    return null;
+  }
+
+  const status = getSubagentStatusView(subagent.status);
+  const StatusIcon = status.icon;
+  const agentLabel = getSubagentLabel(subagent.agent);
+
+  return (
+    <article
+      aria-live="polite"
+      className="my-3 overflow-hidden rounded-xl border border-violet-200 bg-violet-50/60 text-sm text-violet-950"
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-violet-100 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 font-medium">
+          <GitBranch size={15} />
+          <span>{agentLabel} 子 Agent</span>
+        </div>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs text-violet-800">
+          <StatusIcon
+            className={subagent.status === "running" ? "animate-spin" : undefined}
+            size={14}
+          />
+          {status.label}
+        </span>
+      </div>
+      <div className="space-y-1.5 px-3 py-2 text-[13px] leading-5">
+        <div className="break-words font-medium">{subagent.taskSummary}</div>
+        {subagent.summary && (
+          <div className="break-words text-violet-900">{subagent.summary}</div>
+        )}
+        {subagent.error && (
+          <div className="break-words rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-red-800">
+            {subagent.error}
+          </div>
+        )}
+        {subagent.durationMs !== undefined && (
+          <div className="text-xs text-violet-700">
+            耗时 {formatDuration(subagent.durationMs)}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function parseSubagentState(data: unknown): SubagentStateData | null {
+  if (!isPlainRecord(data)) {
+    return null;
+  }
+
+  const status =
+    data.status === "running" ||
+    data.status === "completed" ||
+    data.status === "failed"
+      ? data.status
+      : null;
+  const agent =
+    data.agent === "filesystem" ||
+    data.agent === "memory" ||
+    data.agent === "weather"
+      ? data.agent
+      : null;
+  if (
+    !agent ||
+    !status ||
+    typeof data.parentAgentId !== "string" ||
+    typeof data.startedAt !== "string" ||
+    typeof data.subtaskId !== "string" ||
+    typeof data.taskSummary !== "string"
+  ) {
+    return null;
+  }
+
+  if (
+    data.durationMs !== undefined &&
+    (typeof data.durationMs !== "number" || !Number.isFinite(data.durationMs))
+  ) {
+    return null;
+  }
+
+  return {
+    agent,
+    ...(typeof data.durationMs === "number"
+      ? { durationMs: data.durationMs }
+      : {}),
+    ...(typeof data.error === "string" ? { error: data.error } : {}),
+    ...(typeof data.finishedAt === "string"
+      ? { finishedAt: data.finishedAt }
+      : {}),
+    parentAgentId: data.parentAgentId,
+    startedAt: data.startedAt,
+    status,
+    subtaskId: data.subtaskId,
+    ...(typeof data.summary === "string" ? { summary: data.summary } : {}),
+    taskSummary: data.taskSummary,
+  };
+}
+
+function getSubagentStatusView(status: SubagentStateData["status"]) {
+  if (status === "completed") {
+    return { icon: CheckCircle2, label: "已完成" };
+  }
+  if (status === "failed") {
+    return { icon: AlertTriangle, label: "失败" };
+  }
+  return { icon: LoaderCircle, label: "执行中" };
+}
+
+function getSubagentLabel(agent: SubagentStateData["agent"]) {
+  if (agent === "filesystem") {
+    return "文件系统";
+  }
+  if (agent === "memory") {
+    return "记忆";
+  }
+  return "天气";
+}
+
+type FilesystemChangeData = {
+  approvalId?: string;
+  changeId: string;
+  operation: "create" | "overwrite" | "edit" | "delete";
+  path: string;
+  replacements?: number;
+  sizeBytes?: number;
+  status: "completed" | "rejected" | "failed";
+  summary: string;
+  toolCallId?: string;
+};
+
+function FilesystemChangePart({ data }: DataMessagePartProps) {
+  const change = parseFilesystemChange(data);
+  if (!change) {
+    return null;
+  }
+
+  const operation = getFilesystemOperationView(change.operation);
+  const status = getFilesystemChangeStatusView(change.status);
+  const OperationIcon = operation.icon;
+  const StatusIcon = status.icon;
+
+  return (
+    <article className="my-3 overflow-hidden rounded-xl border border-sky-200 bg-sky-50/60 text-sm text-sky-950">
+      <div className="flex items-center justify-between gap-3 border-b border-sky-100 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 font-medium">
+          <OperationIcon size={15} />
+          <span>{operation.label}</span>
+        </div>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs text-sky-800">
+          <StatusIcon size={14} />
+          {status.label}
+        </span>
+      </div>
+      <div className="space-y-1.5 px-3 py-2 text-[13px] leading-5">
+        <code className="block break-all rounded-lg bg-white/80 px-2 py-1 text-xs text-sky-950">
+          {change.path}
+        </code>
+        <div className="break-words text-sky-900">{change.summary}</div>
+        {(change.sizeBytes !== undefined || change.replacements !== undefined) && (
+          <div className="text-xs text-sky-700">
+            {change.sizeBytes !== undefined && `大小 ${change.sizeBytes} bytes`}
+            {change.sizeBytes !== undefined && change.replacements !== undefined && " · "}
+            {change.replacements !== undefined && `替换 ${change.replacements} 次`}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function parseFilesystemChange(data: unknown): FilesystemChangeData | null {
+  if (!isPlainRecord(data)) {
+    return null;
+  }
+
+  const operation =
+    data.operation === "create" ||
+    data.operation === "overwrite" ||
+    data.operation === "edit" ||
+    data.operation === "delete"
+      ? data.operation
+      : null;
+  const status =
+    data.status === "completed" ||
+    data.status === "rejected" ||
+    data.status === "failed"
+      ? data.status
+      : null;
+  if (
+    !operation ||
+    !status ||
+    typeof data.changeId !== "string" ||
+    typeof data.path !== "string" ||
+    typeof data.summary !== "string"
+  ) {
+    return null;
+  }
+
+  if (
+    (data.sizeBytes !== undefined &&
+      (typeof data.sizeBytes !== "number" || !Number.isFinite(data.sizeBytes))) ||
+    (data.replacements !== undefined &&
+      (typeof data.replacements !== "number" ||
+        !Number.isFinite(data.replacements)))
+  ) {
+    return null;
+  }
+
+  return {
+    ...(typeof data.approvalId === "string"
+      ? { approvalId: data.approvalId }
+      : {}),
+    changeId: data.changeId,
+    operation,
+    path: data.path,
+    ...(typeof data.replacements === "number"
+      ? { replacements: data.replacements }
+      : {}),
+    ...(typeof data.sizeBytes === "number"
+      ? { sizeBytes: data.sizeBytes }
+      : {}),
+    status,
+    summary: data.summary,
+    ...(typeof data.toolCallId === "string"
+      ? { toolCallId: data.toolCallId }
+      : {}),
+  };
+}
+
+function getFilesystemOperationView(
+  operation: FilesystemChangeData["operation"],
+) {
+  if (operation === "create") {
+    return { icon: FilePlus2, label: "创建文件" };
+  }
+  if (operation === "overwrite") {
+    return { icon: FilePlus2, label: "覆盖文件" };
+  }
+  if (operation === "edit") {
+    return { icon: FilePenLine, label: "编辑文件" };
+  }
+  return { icon: FileMinus2, label: "删除文件" };
+}
+
+function getFilesystemChangeStatusView(
+  status: FilesystemChangeData["status"],
+) {
+  if (status === "completed") {
+    return { icon: CheckCircle2, label: "已完成" };
+  }
+  if (status === "rejected") {
+    return { icon: AlertTriangle, label: "已拒绝" };
+  }
+  return { icon: AlertTriangle, label: "执行失败" };
+}
+
+function formatDuration(value: number) {
+  if (value < 1_000) {
+    return `${Math.max(0, Math.round(value))} ms`;
+  }
+  return `${(value / 1_000).toFixed(1)} s`;
 }
 
 function TodoStatePart({ data }: DataMessagePartProps) {

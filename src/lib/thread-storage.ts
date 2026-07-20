@@ -91,6 +91,7 @@ export async function saveRepositoryToServer({
   workspaceId: string;
   threadId: string;
 }) {
+  const persistedRepository = removeTransientStreamEvents(repository);
   const response = await fetch(
     getTenantApiPath(tenantHashId, `/threads/${encodeURIComponent(threadId)}`),
     {
@@ -99,7 +100,7 @@ export async function saveRepositoryToServer({
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        repository,
+        repository: persistedRepository,
         workspaceId,
       }),
     },
@@ -108,6 +109,31 @@ export async function saveRepositoryToServer({
   if (!response.ok) {
     throw new Error("线程状态保存失败。");
   }
+}
+
+export function removeTransientStreamEvents(
+  repository: ExportedMessageRepository,
+): ExportedMessageRepository {
+  return {
+    ...repository,
+    messages: repository.messages.map((item) => ({
+      ...item,
+      message: {
+        ...item.message,
+        content: item.message.content.filter((part) => {
+          if (part.type !== "data") {
+            return true;
+          }
+
+          const dataPart = part as { name?: unknown };
+          return (
+            dataPart.name !== "subagent_state" &&
+            dataPart.name !== "filesystem_change"
+          );
+        }),
+      } as ThreadMessage,
+    })),
+  };
 }
 
 export function getThreadTitle(messages: readonly ThreadMessage[]) {

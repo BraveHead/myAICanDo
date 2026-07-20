@@ -8,7 +8,7 @@ import {
   type ThreadMessage,
   type ToolCallMessagePart,
 } from "@assistant-ui/react";
-import { type PropsWithChildren, useMemo } from "react";
+import { type PropsWithChildren, useMemo, useRef } from "react";
 import {
   isSupportedAgent,
   type SupportedAgent,
@@ -20,6 +20,11 @@ import {
 } from "@/lib/approval-actions";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
 import { isChatStreamEvent } from "@/lib/chat-stream";
+import {
+  applyChatStreamProjection,
+  createChatStreamProjection,
+  dedupeFilesystemChanges,
+} from "@/lib/chat-stream-projection";
 import {
   createApprovalRequestBody,
   type ClientApprovalDecision,
@@ -36,6 +41,7 @@ export function ChatRuntimeProvider({
   tenantHashId,
   workspaceId,
 }: PropsWithChildren<{ tenantHashId: string; workspaceId: string }>) {
+  const emittedFilesystemChangeIdsRef = useRef(new Set<string>());
   const adapter = useMemo<ChatModelAdapter>(
     () => ({
       async *run({
@@ -59,6 +65,8 @@ export function ChatRuntimeProvider({
             tenantHashId,
             threadId,
             workspaceId,
+            emittedFilesystemChangeIds:
+              emittedFilesystemChangeIdsRef.current,
           });
           return;
         }
@@ -137,12 +145,14 @@ function getApprovalDecisions(message: ThreadMessage): ClientApprovalDecision[] 
 async function* runApprovalExecutions({
   abortSignal,
   approvalDecisions,
+  emittedFilesystemChangeIds,
   tenantHashId,
   threadId,
   workspaceId,
 }: {
   abortSignal: AbortSignal;
   approvalDecisions: ClientApprovalDecision[];
+  emittedFilesystemChangeIds: Set<string>;
   tenantHashId: string;
   threadId: string;
   workspaceId: string;
@@ -160,9 +170,19 @@ async function* runApprovalExecutions({
     );
   }
 
+  const filesystemChangeParts = dedupeFilesystemChanges(
+    responses.map((response) => response.filesystemChange),
+    emittedFilesystemChangeIds,
+  ).map((change) => ({
+    type: "data" as const,
+    name: "filesystem_change" as const,
+    data: change,
+  }));
+
   yield {
     content: [
       { type: "text", text: mergeApprovalFinalText(responses) },
+      ...filesystemChangeParts,
       {
         type: "data",
         name: "structured_response",
@@ -482,17 +502,24 @@ function createAssistantContentBuilder() {
   let structuredResponsePart: ThreadAssistantMessagePart | null = null;
   let todoStatePart: ThreadAssistantMessagePart | null = null;
   const agentRetryParts = new Map<string, ThreadAssistantMessagePart>();
+  const subagentParts = new Map<string, ThreadAssistantMessagePart>();
+  const filesystemChangeParts = new Map<string, ThreadAssistantMessagePart>();
   const toolParts = new Map<string, ToolCallMessagePart>();
   const timelineParts: Array<
     | { id: string; kind: "agent_retry" }
+    | { id: string; kind: "filesystem_change" }
+    | { id: string; kind: "subagent_state" }
     | { id: string; kind: "tool_call" }
   > = [];
+  let projection = createChatStreamProjection();
   let requiresAction = false;
   let text = "";
 
   function ensureTimelinePart(
     part:
       | { id: string; kind: "agent_retry" }
+      | { id: string; kind: "filesystem_change" }
+      | { id: string; kind: "subagent_state" }
       | { id: string; kind: "tool_call" },
   ) {
     if (
@@ -537,6 +564,36 @@ function createAssistantContentBuilder() {
             recovery: event.recovery,
           },
         });
+      } else if (
+        event.type === "subagent_start" ||
+        event.type === "subagent_end"
+      ) {
+        projection = applyChatStreamProjection(projection, event);
+        const subagent = projection.subagents.find(
+          (candidate) => candidate.subtaskId === event.subtaskId,
+        );
+        if (subagent) {
+          ensureTimelinePart({
+            id: event.subtaskId,
+            kind: "subagent_state",
+          });
+          subagentParts.set(event.subtaskId, {
+            type: "data",
+            name: "subagent_state",
+            data: subagent,
+          });
+        }
+      } else if (event.type === "filesystem_change") {
+        projection = applyChatStreamProjection(projection, event);
+        ensureTimelinePart({
+          id: event.changeId,
+          kind: "filesystem_change",
+        });
+        filesystemChangeParts.set(event.changeId, {
+          type: "data",
+          name: "filesystem_change",
+          data: event,
+        });
       } else if (event.type === "todo_update") {
         todoStatePart = {
           type: "data",
@@ -554,6 +611,16 @@ function createAssistantContentBuilder() {
         if (part.kind === "tool_call") {
           const toolPart = toolParts.get(part.id);
           return toolPart ? [toolPart] : [];
+        }
+
+        if (part.kind === "subagent_state") {
+          const subagentPart = subagentParts.get(part.id);
+          return subagentPart ? [subagentPart] : [];
+        }
+
+        if (part.kind === "filesystem_change") {
+          const filesystemChangePart = filesystemChangeParts.get(part.id);
+          return filesystemChangePart ? [filesystemChangePart] : [];
         }
 
         const agentRetryPart = agentRetryParts.get(part.id);

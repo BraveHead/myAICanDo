@@ -5,19 +5,19 @@ type WorkspaceThreadPageProps = {
   params: Promise<{
     tenantId: string;
     workspaceId: string;
-    threadId: string;
+    workspaceThreadId: string;
   }>;
 };
 
 export default async function WorkspaceThreadPage({
   params,
 }: WorkspaceThreadPageProps) {
-  const { tenantId, workspaceId, threadId } = await params;
+  const { tenantId, workspaceId, workspaceThreadId } = await params;
   const access = await requireWorkspaceAccess(tenantId, workspaceId);
 
   return (
     <AppShell
-      initialThreadId={threadId}
+      initialThreadId={workspaceThreadId}
       tenantHashId={access.tenantHashId}
       workspaceId={access.workspace.workspaceId}
     />

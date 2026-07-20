@@ -52,4 +52,72 @@ describe("chat stream events", () => {
     expect(encoded).toContain('"recovery":"checkpoint"');
     expect(encoded).toContain('"reason":"Cannot read properties');
   });
+
+  test("encodes and validates M8 lifecycle and filesystem events", () => {
+    const events = [
+      {
+        agent: "filesystem",
+        parentAgentId: "coordinator",
+        startedAt: "2026-07-15T00:00:00.000Z",
+        subtaskId: "task_1",
+        taskSummary: "读取项目文件",
+        type: "subagent_start",
+      },
+      {
+        agent: "filesystem",
+        durationMs: 120,
+        finishedAt: "2026-07-15T00:00:00.120Z",
+        status: "completed",
+        subtaskId: "task_1",
+        summary: "已完成读取",
+        type: "subagent_end",
+      },
+      {
+        changeId: "change_1",
+        operation: "create",
+        path: "workspace/report.md",
+        sizeBytes: 148,
+        status: "completed",
+        summary: "已创建文件",
+        type: "filesystem_change",
+      },
+    ];
+
+    for (const event of events) {
+      expect(isChatStreamEvent(event, event.type)).toBe(true);
+      expect(encodeChatSseEvent(event)).toContain(`event: ${event.type}`);
+    }
+
+    expect(
+      isChatStreamEvent(
+        { type: "filesystem_change", changeId: "change_1" },
+        "filesystem_change",
+      ),
+    ).toBe(false);
+    expect(
+      isChatStreamEvent(
+        {
+          agent: "filesystem",
+          durationMs: "120",
+          finishedAt: "2026-07-15T00:00:00.120Z",
+          status: "completed",
+          subtaskId: "task_1",
+          summary: "bad",
+          type: "subagent_end",
+        },
+        "subagent_end",
+      ),
+    ).toBe(false);
+    expect(
+      isChatStreamEvent(
+        {
+          status: "done",
+          toolCallId: "call_1",
+          toolName: "read_filesystem_file",
+          type: "tool_call",
+        },
+        "tool_call",
+      ),
+    ).toBe(false);
+  });
 });

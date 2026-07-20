@@ -32,6 +32,7 @@ import {
   type StoredPendingAction,
 } from "@/lib/server/pending-action-store";
 import { createRequestLogger, toLogError } from "@/lib/server/logger";
+import { createFilesystemChangeEvent } from "@/lib/chat-stream-projection";
 
 type ApprovalRequestBody = {
   approvalId?: unknown;
@@ -435,10 +436,19 @@ async function executeApprovedAction(
     content: JSON.stringify(result),
     status: result.ok ? "success" : "error",
   };
+  const filesystemChange = createFilesystemChangeEvent({
+    approvalId: action.actionId,
+    args: action.args,
+    changeId: `approval:${action.actionId}`,
+    result,
+    toolCallId: action.toolCallId,
+    toolName: action.toolName,
+  });
 
   return createTerminalApprovalResponse({
     action,
     decision: "approve",
+    ...(filesystemChange ? { filesystemChange } : {}),
     finalText: result.summary,
     isError: !result.ok,
     ok: result.ok,
@@ -470,6 +480,18 @@ function createRejectedApprovalResponse({
     message: reason || "The user rejected this approval request.",
     summary: finalText,
   });
+  const filesystemChange = createFilesystemChangeEvent({
+    approvalId: action.actionId,
+    args: action.args,
+    changeId: `approval:${action.actionId}`,
+    result: {
+      ok: false,
+      summary: finalText,
+    },
+    status: "rejected",
+    toolCallId: action.toolCallId,
+    toolName: action.toolName,
+  });
 
   return {
     approvalId: action.actionId,
@@ -479,6 +501,7 @@ function createRejectedApprovalResponse({
       ? { followUpMessage: guidance }
       : {}),
     finalText,
+    ...(filesystemChange ? { filesystemChange } : {}),
     isError: false,
     ok: true,
     status: "rejected",
@@ -518,6 +541,7 @@ function createTerminalApprovalResponse({
   isError,
   ok,
   status,
+  filesystemChange,
   toolResult,
 }: {
   action: StoredPendingAction;
@@ -526,6 +550,7 @@ function createTerminalApprovalResponse({
   isError: boolean;
   ok: boolean;
   status: ApprovalActionStatus;
+  filesystemChange?: ApprovalExecutionResponse["filesystemChange"];
   toolResult: ApprovalToolResult;
 }): ApprovalExecutionResponse {
   return {
@@ -533,6 +558,7 @@ function createTerminalApprovalResponse({
     approved: status === "executed" || status === "failed",
     decision,
     finalText,
+    ...(filesystemChange ? { filesystemChange } : {}),
     isError,
     ok,
     status,

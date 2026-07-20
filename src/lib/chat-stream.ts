@@ -1,5 +1,46 @@
 import type { TodoState } from "@/lib/agent/harness/planning/types";
 
+export type SubagentId = "filesystem" | "memory" | "weather";
+export type ToolCallStatus =
+  | "running"
+  | "retrying"
+  | "requires_action"
+  | "complete"
+  | "error";
+
+export type SubagentStartEvent = {
+  agent: SubagentId;
+  parentAgentId: string;
+  startedAt: string;
+  subtaskId: string;
+  taskSummary: string;
+  type: "subagent_start";
+};
+
+export type SubagentEndEvent = {
+  agent: SubagentId;
+  durationMs: number;
+  error?: string;
+  finishedAt: string;
+  status: "completed" | "failed";
+  subtaskId: string;
+  summary: string;
+  type: "subagent_end";
+};
+
+export type FilesystemChangeEvent = {
+  approvalId?: string;
+  changeId: string;
+  operation: "create" | "overwrite" | "edit" | "delete";
+  path: string;
+  replacements?: number;
+  sizeBytes?: number;
+  status: "completed" | "rejected" | "failed";
+  summary: string;
+  toolCallId?: string;
+  type: "filesystem_change";
+};
+
 export type ChatStreamEvent =
   | {
       text: string;
@@ -32,7 +73,7 @@ export type ChatStreamEvent =
         maxRetries: number;
         nextDelayMs: number;
       };
-      status: "running" | "retrying" | "requires_action" | "complete" | "error";
+      status: ToolCallStatus;
       toolCallId: string;
       toolName: string;
       type: "tool_call";
@@ -55,7 +96,10 @@ export type ChatStreamEvent =
     }
   | ({
       type: "todo_update";
-    } & TodoState);
+    } & TodoState)
+  | SubagentStartEvent
+  | SubagentEndEvent
+  | FilesystemChangeEvent;
 
 const CHAT_STREAM_EVENT_TYPES = new Set<ChatStreamEvent["type"]>([
   "text_delta",
@@ -63,6 +107,9 @@ const CHAT_STREAM_EVENT_TYPES = new Set<ChatStreamEvent["type"]>([
   "structured_response",
   "agent_retry",
   "todo_update",
+  "subagent_start",
+  "subagent_end",
+  "filesystem_change",
 ]);
 
 export function encodeChatSseEvent(event: ChatStreamEvent) {
@@ -100,6 +147,34 @@ export function isChatStreamEvent(
 
   if (candidate.type === "agent_retry") {
     return isAgentRetryEvent(candidate);
+  }
+
+  if (candidate.type === "subagent_start") {
+    return isSubagentStartEvent(candidate);
+  }
+
+  if (candidate.type === "subagent_end") {
+    return isSubagentEndEvent(candidate);
+  }
+
+  if (candidate.type === "filesystem_change") {
+    return isFilesystemChangeEvent(candidate);
+  }
+
+  if (candidate.type === "text_delta") {
+    return typeof candidate.text === "string";
+  }
+
+  if (candidate.type === "tool_call") {
+    return (
+      typeof candidate.toolCallId === "string" &&
+      typeof candidate.toolName === "string" &&
+      isToolCallStatus(candidate.status)
+    );
+  }
+
+  if (candidate.type === "structured_response") {
+    return "response" in candidate;
   }
 
   return true;
@@ -161,5 +236,68 @@ function isAgentRetryEvent(value: Partial<ChatStreamEvent>) {
     typeof candidate.maxAttempts === "number" &&
     typeof candidate.reason === "string" &&
     candidate.recovery === "checkpoint"
+  );
+}
+
+function isSubagentStartEvent(value: Partial<ChatStreamEvent>) {
+  const candidate = value as Partial<SubagentStartEvent>;
+  return (
+    isSubagentId(candidate.agent) &&
+    typeof candidate.parentAgentId === "string" &&
+    typeof candidate.startedAt === "string" &&
+    typeof candidate.subtaskId === "string" &&
+    typeof candidate.taskSummary === "string"
+  );
+}
+
+function isSubagentEndEvent(value: Partial<ChatStreamEvent>) {
+  const candidate = value as Partial<SubagentEndEvent>;
+  return (
+    isSubagentId(candidate.agent) &&
+    typeof candidate.durationMs === "number" &&
+    Number.isFinite(candidate.durationMs) &&
+    (candidate.error === undefined || typeof candidate.error === "string") &&
+    typeof candidate.finishedAt === "string" &&
+    (candidate.status === "completed" || candidate.status === "failed") &&
+    typeof candidate.subtaskId === "string" &&
+    typeof candidate.summary === "string"
+  );
+}
+
+function isFilesystemChangeEvent(value: Partial<ChatStreamEvent>) {
+  const candidate = value as Partial<FilesystemChangeEvent>;
+  return (
+    (candidate.approvalId === undefined || typeof candidate.approvalId === "string") &&
+    typeof candidate.changeId === "string" &&
+    (candidate.operation === "create" ||
+      candidate.operation === "overwrite" ||
+      candidate.operation === "edit" ||
+      candidate.operation === "delete") &&
+    typeof candidate.path === "string" &&
+    (candidate.replacements === undefined ||
+      (typeof candidate.replacements === "number" &&
+        Number.isFinite(candidate.replacements))) &&
+    (candidate.sizeBytes === undefined ||
+      (typeof candidate.sizeBytes === "number" &&
+        Number.isFinite(candidate.sizeBytes))) &&
+    (candidate.status === "completed" ||
+      candidate.status === "rejected" ||
+      candidate.status === "failed") &&
+    typeof candidate.summary === "string" &&
+    (candidate.toolCallId === undefined || typeof candidate.toolCallId === "string")
+  );
+}
+
+function isSubagentId(value: unknown): value is SubagentId {
+  return value === "filesystem" || value === "memory" || value === "weather";
+}
+
+function isToolCallStatus(value: unknown): value is ToolCallStatus {
+  return (
+    value === "running" ||
+    value === "retrying" ||
+    value === "requires_action" ||
+    value === "complete" ||
+    value === "error"
   );
 }

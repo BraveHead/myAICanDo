@@ -796,6 +796,11 @@
               </div>
             </div>
             <div class="note">
+              <strong>M7 已完成：</strong>
+              五类敏感工具已通过统一 policy registry 接入审批，pending action 使用 tenant/user/workspace/thread scope 和 <code>pending → approved → executing → executed/failed</code> 状态机；兼容旧 <code>approved: boolean</code> 请求，并支持 reject、edit_args、guidance。
+              guidance 不恢复旧 checkpoint，而是沿当前 workspace/thread 发起新的普通聊天回合。
+            </div>
+            <div class="note">
               <strong>M7 实施边界：</strong>
               本轮只覆盖 <code>write_file</code>、<code>edit_file</code>、<code>delete_file</code>、<code>save_memory</code>、<code>delete_memory</code>。
               审批策略统一进入 registry，pending action 增加 <code>workspace_id</code> 和 <code>executing</code> 原子领取状态；支持确认、拒绝、修改参数并执行、提供指导四种决策。
@@ -813,16 +818,20 @@
             <div class="steps">
               <div class="step-box">
                 <strong>改动</strong>
-                扩展 <code>ChatStreamEvent</code>：<code>todo_update</code>、<code>subagent_start/end</code>、<code>filesystem_change</code>。
+                扩展并严格校验 <code>ChatStreamEvent</code>：新增 <code>subagent_start</code>、<code>subagent_end</code>、<code>filesystem_change</code>；SSE 只传路径、摘要、状态、大小和替换次数。
               </div>
               <div class="step-box">
-                <strong>UI</strong>
-                在聊天区展示任务列表、子任务轨迹、文件变更摘要，不展示大段内部日志。
+                <strong>实时链路</strong>
+                子 Agent 只向主线程发送 start/end 生命周期，子 Agent 内部 tool/todo 事件不展开；文件变更统一覆盖普通工具和审批执行响应。
               </div>
               <div class="step-box">
-                <strong>验收</strong>
-                长任务中用户能看到当前正在执行哪一步、哪个子 agent 在工作、改了哪些文件。
+                <strong>UI 与验收</strong>
+                聊天时间线展示任务进度、子 Agent 状态和文件变更卡片；刷新只恢复已持久化消息，不恢复临时事件，不新增事件表。
               </div>
+            </div>
+            <div class="note">
+              <strong>M8 实施顺序：</strong>
+              先更新事件类型/校验器，再接入 subagent start/end；随后从 write/edit/delete 结果和 approvals 响应生成文件变更事件；最后在 <code>ChatRuntimeProvider</code> 去重组装并在 <code>ChatWorkspace</code> 内嵌展示。保持 M7 approval、checkpoint、thread history 和 workspace scope 不变。
             </div>
           </div>
         </article>
@@ -854,20 +863,20 @@
     <section id="first">
       <h2 class="section"><span class="num">§5</span>第一步建议</h2>
       <div class="callout warn">
-        <strong>下一步建议从 M7：Human-in-the-loop v2 开始。</strong>
-        M0-M6 的 Harness、filesystem、planning、context offloading、subagents、skills 和 workspace memory 已形成基础；当前应先统一敏感工具审批、执行幂等和 workspace scope，再继续扩展 Streaming v2。
+        <strong>下一步建议从 M8：Streaming v2 开始。</strong>
+        M7 已完成敏感工具审批、执行幂等和 workspace scope 校验；当前应把 Agent 执行过程中的任务、子 Agent 生命周期和文件变更以实时结构化事件投影到聊天界面。
       </div>
 
-      <h3>M7 的拆分顺序</h3>
+      <h3>M8 的拆分顺序</h3>
       <ol>
-        <li>先建立审批 policy registry，统一五类文件/用户记忆 mutation 的参数校验、预览和执行器。</li>
-        <li>扩展 pending action 的 workspace scope，增加历史 workspace 回填、<code>executing</code> 原子领取和重复提交保护。</li>
-        <li>扩展 approvals API，兼容旧 <code>approved</code> 请求，并支持 approve、reject、edit_args、guidance 四种决策。</li>
-        <li>调整 Agent runner、SSE 和审批卡片，增加参数编辑与 guidance 输入；guidance 通过普通 chat 回合继续执行。</li>
-        <li>补齐 tenant/workspace/thread 隔离、幂等执行、过期处理和 Chrome 回归验收，再进入 M8 Streaming v2。</li>
+        <li>更新 <code>ChatStreamEvent</code> 类型、严格校验器和 SSE 编解码测试，确保非法事件不会进入前端时间线。</li>
+        <li>在 <code>task</code> 执行前后发送 <code>subagent_start/end</code>，只向主线程投影生命周期和长度受限的摘要，过滤子 Agent 内部事件。</li>
+        <li>从 <code>write_file/edit_file/delete_file</code> 结果生成 <code>filesystem_change</code>；审批确认响应复用同一转换器，拒绝不产生 completed 变更。</li>
+        <li>扩展 <code>ChatRuntimeProvider</code> 按 <code>subtaskId/changeId</code> 合并、去重并保留到达顺序，注入 <code>subagent_state/filesystem_change</code> 数据段。</li>
+        <li>在 <code>ChatWorkspace</code> 内嵌任务、子 Agent 和文件变更卡片，补齐实时-only、损坏事件容错、审批重复确认和 Chrome 回归验收，再进入 M9 Sandbox / Execute。</li>
       </ol>
 
-      <h3>M7 关键改动文件</h3>
+      <h3>M8 关键改动文件</h3>
       <table>
         <thead>
           <tr>
@@ -877,24 +886,24 @@
         </thead>
         <tbody>
           <tr>
-            <td><code>src/lib/approval-actions.ts</code><br><code>src/lib/approval-policy.ts</code></td>
-            <td>审批决策、工具策略 registry、参数校验、预览和统一执行器。</td>
+            <td><code>src/lib/chat-stream.ts</code><br><code>src/lib/chat-stream-projection.ts</code></td>
+            <td>新增三类事件契约、字段校验、文件结果转换器和 subagent/filesystem 去重投影。</td>
           </tr>
           <tr>
-            <td><code>src/lib/server/pending-action-store.ts</code></td>
-            <td>pending action 增加 workspace scope、历史回填、executing 原子领取和终态缓存。</td>
+            <td><code>src/lib/agent/core/agent-runner.ts</code></td>
+            <td>发送 subagent 生命周期和普通文件工具变更事件；不展开 child thread 内部事件。</td>
           </tr>
           <tr>
-            <td><code>src/app/api/tenants/[tenantId]/chat/approvals/route.ts</code></td>
-            <td>审批鉴权、scope 校验、四种决策、幂等执行和 guidance follow-up。</td>
+            <td><code>src/app/api/tenants/[tenantId]/chat/approvals/route.ts</code><br><code>src/lib/approval-actions.ts</code></td>
+            <td>审批执行响应增加可选 filesystemChange，复用普通工具的变更事件格式。</td>
           </tr>
           <tr>
-            <td><code>src/lib/agent/core/agent-runner.ts</code><br><code>src/components/assistant/chat-runtime-provider.tsx</code><br><code>src/components/assistant/chat-workspace.tsx</code></td>
-            <td>requires_action 选项、参数编辑、guidance 普通聊天回合和审批状态展示。</td>
+            <td><code>src/components/assistant/chat-runtime-provider.tsx</code><br><code>src/components/assistant/chat-workspace.tsx</code></td>
+            <td>实时事件组装、按 ID 去重，以及任务进度、子 Agent 和文件变更时间线展示。</td>
           </tr>
           <tr>
-            <td><code>tests/approval-policy.test.mjs</code><br><code>tests/approval-decision.test.mjs</code></td>
-            <td>策略 registry、审批协议、非法参数、edit_args、guidance 和 scope 回归。</td>
+            <td><code>tests/chat-stream.test.mjs</code><br><code>tests/subagent-stream.test.mjs</code><br><code>tests/filesystem-change-event.test.mjs</code><br><code>tests/chat-runtime-stream.test.mjs</code></td>
+            <td>事件编码校验、子 Agent 成败、文件变更安全字段、审批去重和混合时间线回归。</td>
           </tr>
         </tbody>
       </table>

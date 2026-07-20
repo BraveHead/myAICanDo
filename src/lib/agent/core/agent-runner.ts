@@ -13,6 +13,7 @@ import {
   type ApprovalPendingPayload,
 } from "@/lib/approval-actions";
 import type { ChatStreamEvent } from "@/lib/chat-stream";
+import { createFilesystemChangeEvent } from "@/lib/chat-stream-projection";
 import { DEFAULT_MODEL_TIMEOUT } from "./chat-model";
 import { createHarnessedAgent } from "../harness";
 import {
@@ -460,6 +461,7 @@ async function runSubagentTask({
   contextPolicy,
   modelName,
   memoryManifest,
+  onStreamEvent,
   parentAgentId,
   parentThreadId,
   runConfig,
@@ -470,9 +472,18 @@ async function runSubagentTask({
   threadScope,
 }: RunSubagentTaskInput): Promise<SubagentTaskResult> {
   const startedAt = Date.now();
+  const startedAtIso = new Date(startedAt).toISOString();
+  emitSubagentStartEvent({
+    agent,
+    onStreamEvent,
+    parentAgentId,
+    startedAt: startedAtIso,
+    subtaskId,
+    task,
+  });
   const definition = getReadonlySubagentDefinition(agent);
   if (!definition) {
-    return {
+    const result: SubagentTaskResult = {
       agent,
       childThreadId,
       error: {
@@ -483,6 +494,16 @@ async function runSubagentTask({
       subtaskId,
       summary: `子任务执行失败：不支持的 subagent ${agent}。`,
     };
+    emitSubagentEndEvent({
+      agent,
+      durationMs: Date.now() - startedAt,
+      error: result.error.message,
+      onStreamEvent,
+      status: "failed",
+      subtaskId,
+      summary: result.summary,
+    });
+    return result;
   }
 
   const subagentLogger = runLogger?.child({
@@ -565,7 +586,7 @@ async function runSubagentTask({
       "subagent task completed",
     );
 
-    return {
+    const result: SubagentTaskResult = {
       agent,
       childThreadId,
       ok: true,
@@ -573,6 +594,15 @@ async function runSubagentTask({
       summary,
       toolResults: visibleToolResults,
     };
+    emitSubagentEndEvent({
+      agent,
+      durationMs: Date.now() - startedAt,
+      onStreamEvent,
+      status: "completed",
+      subtaskId,
+      summary,
+    });
+    return result;
   } catch (error) {
     const message = formatUnknownError(error);
     subagentLogger?.error(
@@ -584,7 +614,7 @@ async function runSubagentTask({
       "subagent task failed",
     );
 
-    return {
+    const result: SubagentTaskResult = {
       agent,
       childThreadId,
       error: {
@@ -596,7 +626,78 @@ async function runSubagentTask({
       summary: `子任务执行失败：${message}`,
       ...(toolResults.length > 0 ? { toolResults } : {}),
     };
+    emitSubagentEndEvent({
+      agent,
+      durationMs: Date.now() - startedAt,
+      error: message,
+      onStreamEvent,
+      status: "failed",
+      subtaskId,
+      summary: result.summary,
+    });
+    return result;
   }
+}
+
+function emitSubagentStartEvent({
+  agent,
+  onStreamEvent,
+  parentAgentId,
+  startedAt,
+  subtaskId,
+  task,
+}: {
+  agent: RunSubagentTaskInput["agent"];
+  onStreamEvent?: (event: ChatStreamEvent) => void;
+  parentAgentId: string;
+  startedAt: string;
+  subtaskId: string;
+  task: string;
+}) {
+  onStreamEvent?.({
+    agent,
+    parentAgentId,
+    startedAt,
+    subtaskId,
+    taskSummary: limitStreamText(task, 240),
+    type: "subagent_start",
+  });
+}
+
+function emitSubagentEndEvent({
+  agent,
+  durationMs,
+  error,
+  onStreamEvent,
+  status,
+  subtaskId,
+  summary,
+}: {
+  agent: RunSubagentTaskInput["agent"];
+  durationMs: number;
+  error?: string;
+  onStreamEvent?: (event: ChatStreamEvent) => void;
+  status: "completed" | "failed";
+  subtaskId: string;
+  summary: string;
+}) {
+  onStreamEvent?.({
+    agent,
+    durationMs,
+    ...(error ? { error: limitStreamText(error, 500) } : {}),
+    finishedAt: new Date().toISOString(),
+    status,
+    subtaskId,
+    summary: limitStreamText(summary, 500),
+    type: "subagent_end",
+  });
+}
+
+function limitStreamText(value: string, limit: number) {
+  const normalized = value.trim();
+  return normalized.length <= limit
+    ? normalized
+    : `${normalized.slice(0, limit - 1)}…`;
 }
 
 function createSubagentRunConfig(
@@ -861,6 +962,15 @@ function createToolCallStreamingMiddleware(
           toolCallId,
           toolName,
         });
+        const filesystemChange = createFilesystemChangeEvent({
+          args,
+          result,
+          toolCallId,
+          toolName,
+        });
+        if (filesystemChange) {
+          onStreamEvent(filesystemChange);
+        }
         return visibleResult;
       } catch (error) {
         runLogger?.error(
@@ -879,6 +989,19 @@ function createToolCallStreamingMiddleware(
           toolCallId,
           toolName,
         });
+        const filesystemChange = createFilesystemChangeEvent({
+          args,
+          result: {
+            ok: false,
+            summary: formatUnknownError(error),
+          },
+          status: "failed",
+          toolCallId,
+          toolName,
+        });
+        if (filesystemChange) {
+          onStreamEvent(filesystemChange);
+        }
         throw error;
       }
     },
