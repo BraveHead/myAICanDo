@@ -39,14 +39,15 @@ const context = {
   threadScope: scope,
 };
 
-describe("M7 approval policy registry", () => {
-  test("registers only the five existing mutation tools", () => {
+describe("M7/M9 approval policy registry", () => {
+  test("registers the five mutation tools and execute_command", () => {
     const names = [
       "write_file",
       "edit_file",
       "delete_file",
       "save_memory",
       "delete_memory",
+      "execute_command",
     ];
 
     for (const name of names) {
@@ -57,6 +58,10 @@ describe("M7 approval policy registry", () => {
     }
 
     expect(getApprovalPolicy("task")).toBeUndefined();
+    expect(getApprovalPolicy("execute_command")).toMatchObject({
+      supportsEditArgs: true,
+      toolName: "execute_command",
+    });
     expect(createApprovalOptions("write_file")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "approve-once" }),
@@ -98,6 +103,38 @@ describe("M7 approval policy registry", () => {
     expect(invalid).toMatchObject({
       error: { code: "invalid_path" },
       ok: false,
+    });
+  });
+
+  test("previews execute_command with the same validation used by approval execution", async () => {
+    await fs.mkdir(path.join(root, "tenant_a", "user_a", "thread_a", "workspace"), {
+      recursive: true,
+    });
+
+    const prepared = await prepareApprovalAction({
+      args: {
+        command: "pwd",
+        cwd: "workspace",
+      },
+      context,
+      toolName: "execute_command",
+    });
+
+    expect(prepared.requiresApproval).toBe(true);
+    expect(prepared.preview).toMatchObject({
+      cwd: "workspace",
+      filesystem: "read-only",
+      kind: "command",
+      network: "disabled",
+    });
+
+    const invalid = await prepareApprovalAction({
+      args: { command: "sh", args: ["-c", "pwd"] },
+      context,
+      toolName: "execute_command",
+    });
+    expect(invalid).toMatchObject({
+      requiresApproval: false,
     });
   });
 });

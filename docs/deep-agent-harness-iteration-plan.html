@@ -813,7 +813,7 @@
         <article class="milestone">
           <div class="tag">M8</div>
           <div>
-            <h3>Streaming v2：投影 todos、subagents、filesystem 操作</h3>
+            <h3>Streaming v2：投影 todos、subagents、filesystem 操作（已完成）</h3>
             <p class="why">当 harness 能力变多后，只看最终答案不够。需要把用户关心的状态以结构化事件投影到前端。</p>
             <div class="steps">
               <div class="step-box">
@@ -839,20 +839,55 @@
         <article class="milestone">
           <div class="tag">M9</div>
           <div>
-            <h3>Sandbox / Execute：最后再做代码执行能力</h3>
-            <p class="why">shell/code execution 风险最高，应该在 filesystem permissions、approval、event streaming 都稳定后再接。</p>
+            <h3>Sandbox / Execute：安全代码执行能力（当前迭代）</h3>
+            <p class="why">在 M7 审批状态机和 M8 实时事件基础上，只允许当前 thread sandbox 内的受限只读命令和测试命令，禁止降级为本机裸 Shell。</p>
             <div class="steps">
               <div class="step-box">
-                <strong>改动</strong>
-                先设计 <code>execute_command</code> 协议，不直接开放本机 shell；优先接隔离容器或受限 runtime。
+                <strong>M9.0 契约</strong>
+                新增 <code>execute_command</code>、<code>CommandExecutionResult</code>、<code>CommandResultEvent</code> 和命令 approval preview；严格校验 command、args、cwd、timeoutMs。
               </div>
               <div class="step-box">
-                <strong>安全</strong>
-                命令 allowlist、超时、输出截断、网络策略、密钥隔离、approval 必须先完成。
+                <strong>M9.1 隔离执行</strong>
+                macOS 使用 <code>sandbox-exec</code>，Docker 使用 <code>network=none/read-only/cap-drop=ALL</code>；仅挂载当前 thread 的 <code>workspace/notes</code>，固定环境变量，超时终止并限制输出。
               </div>
               <div class="step-box">
-                <strong>验收</strong>
-                能跑安全的只读命令和测试命令；危险命令被拦截；所有执行记录可审计。
+                <strong>M9.2 审批链路</strong>
+                <code>execute_command</code> 进入 M7 policy registry；审批前只生成 preview，确认后原子领取 <code>executing</code>，重复确认返回缓存结果，拒绝和 guidance 不启动进程。
+              </div>
+              <div class="step-box">
+                <strong>M9.3 实时结果</strong>
+                审批响应和 SSE 统一生成 <code>command_result</code>；聊天时间线展示命令、逻辑 cwd、状态、exit code、耗时及截断后的 stdout/stderr，刷新保留最终结果。
+              </div>
+            </div>
+            <div class="note">
+              <strong>M9 安全边界：</strong>
+              首批 allowlist 为 <code>pwd</code>、<code>ls</code>、<code>find</code>、<code>rg</code>、<code>cat</code>、<code>head</code>、<code>tail</code>、<code>wc</code> 和受限 <code>bun test/typecheck/lint/build</code>；拒绝 shell、网络、安装、删除、提权、绝对路径、<code>..</code>、symlink、管道、重定向和后台执行。
+              禁止访问仓库根目录、<code>.env</code>、任何 <code>AGENTS.md</code>、project memory 及服务端 secrets；coordinator/filesystem 主 Agent 可使用，readonly 子 Agent 和 task 子 Agent 不继承执行工具。
+            </div>
+            <div class="note">
+              <strong>M9 数据流：</strong>
+              Agent 调用命令 → allowlist/schema/path 校验 → 生成 preview → 创建带 tenant/user/workspace/thread scope 的 pending action → SSE <code>requires_action</code> → 用户 approve/reject/edit_args/guidance → 服务端重新校验并原子领取 → SandboxExecutor 执行 → 保存最终结果 → 返回 <code>command_result</code>；没有可用隔离后端时返回 <code>sandbox_unavailable</code>，不执行裸进程。
+            </div>
+          </div>
+        </article>
+
+        <article class="milestone">
+          <div class="tag">M10</div>
+          <div>
+            <h3>Persistent Execute：后台任务与 stdout 分片流式（M9 完成后）</h3>
+            <p class="why">M9 v1 只在审批后同步返回最终结果；长时间命令、取消、重试、后台任务和实时 stdout/stderr 需要独立的持久化执行模型。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>任务持久化</strong>
+                增加可恢复的执行任务状态、取消和过期处理，避免单次 HTTP/SSE 请求承担长任务。
+              </div>
+              <div class="step-box">
+                <strong>实时输出</strong>
+                以受限分片事件传递 stdout/stderr，处理背压、断线恢复、重复片段和最终结果合并。
+              </div>
+              <div class="step-box">
+                <strong>边界</strong>
+                继续复用 M9 SandboxExecutor、approval、workspace/thread scope 和审计字段，不扩大命令 allowlist。
               </div>
             </div>
           </div>
@@ -863,20 +898,20 @@
     <section id="first">
       <h2 class="section"><span class="num">§5</span>第一步建议</h2>
       <div class="callout warn">
-        <strong>下一步建议从 M8：Streaming v2 开始。</strong>
-        M7 已完成敏感工具审批、执行幂等和 workspace scope 校验；当前应把 Agent 执行过程中的任务、子 Agent 生命周期和文件变更以实时结构化事件投影到聊天界面。
+        <strong>当前迭代从 M9：Sandbox / Execute 开始。</strong>
+        M8 Streaming v2 已完成实时任务、子 Agent 生命周期和文件变更投影；当前应在审批前置和 workspace/thread scope 校验基础上接入安全代码执行，并保持不落裸 Shell 的硬边界。
       </div>
 
-      <h3>M8 的拆分顺序</h3>
+      <h3>M9 的拆分顺序</h3>
       <ol>
-        <li>更新 <code>ChatStreamEvent</code> 类型、严格校验器和 SSE 编解码测试，确保非法事件不会进入前端时间线。</li>
-        <li>在 <code>task</code> 执行前后发送 <code>subagent_start/end</code>，只向主线程投影生命周期和长度受限的摘要，过滤子 Agent 内部事件。</li>
-        <li>从 <code>write_file/edit_file/delete_file</code> 结果生成 <code>filesystem_change</code>；审批确认响应复用同一转换器，拒绝不产生 completed 变更。</li>
-        <li>扩展 <code>ChatRuntimeProvider</code> 按 <code>subtaskId/changeId</code> 合并、去重并保留到达顺序，注入 <code>subagent_state/filesystem_change</code> 数据段。</li>
-        <li>在 <code>ChatWorkspace</code> 内嵌任务、子 Agent 和文件变更卡片，补齐实时-only、损坏事件容错、审批重复确认和 Chrome 回归验收，再进入 M9 Sandbox / Execute。</li>
+        <li>先落契约与策略：定义 <code>ExecuteCommandArgs</code>、结果/事件类型、allowlist、参数总长、timeout、stdout/stderr 限额和错误码。</li>
+        <li>实现 <code>SandboxExecutor</code> 抽象及 macOS/Docker backend；固定环境变量、关闭网络、只读挂载 workspace/notes，注入 Mock 测试，不允许 child_process 裸执行 fallback。</li>
+        <li>将命令工具接入 coordinator/filesystem 主 Agent 和 M7 approval registry；确认前只创建 pending action，approve 原子领取执行权，reject/edit_args/guidance 均重新校验并保持幂等。</li>
+        <li>扩展 <code>ChatStreamEvent</code> 和 <code>ChatRuntimeProvider</code>，按 <code>executionId</code> 去重审批缓存结果，并在 <code>ChatWorkspace</code> 展示纯文本命令结果卡片。</li>
+        <li>补充 allowlist、路径/symlink、超时、输出截断、隔离不可用、审批 scope、SSE 校验和恶意 stdout 测试，最后完成 Chrome 回归；M10 再做后台持久化执行和 stdout 分片流式。</li>
       </ol>
 
-      <h3>M8 关键改动文件</h3>
+      <h3>M9 关键改动文件</h3>
       <table>
         <thead>
           <tr>
@@ -886,24 +921,24 @@
         </thead>
         <tbody>
           <tr>
-            <td><code>src/lib/chat-stream.ts</code><br><code>src/lib/chat-stream-projection.ts</code></td>
-            <td>新增三类事件契约、字段校验、文件结果转换器和 subagent/filesystem 去重投影。</td>
+            <td><code>src/lib/agent/services/command-execution.ts</code><br><code>src/lib/tools/execute-command-tool.ts</code></td>
+            <td>定义命令 allowlist、thread sandbox 路径解析、SandboxExecutor、macOS/Docker backend、超时和输出限制。</td>
           </tr>
           <tr>
-            <td><code>src/lib/agent/core/agent-runner.ts</code></td>
-            <td>发送 subagent 生命周期和普通文件工具变更事件；不展开 child thread 内部事件。</td>
+            <td><code>src/lib/approval-policy.ts</code><br><code>src/lib/approval-actions.ts</code></td>
+            <td>将 execute_command 纳入统一审批策略、预览、编辑参数和执行结果类型。</td>
           </tr>
           <tr>
-            <td><code>src/app/api/tenants/[tenantId]/chat/approvals/route.ts</code><br><code>src/lib/approval-actions.ts</code></td>
-            <td>审批执行响应增加可选 filesystemChange，复用普通工具的变更事件格式。</td>
+            <td><code>src/app/api/tenants/[tenantId]/chat/approvals/route.ts</code><br><code>src/lib/agent/core/agent-runner.ts</code></td>
+            <td>复用 M7 pending action scope 和原子执行状态机，审批响应返回 commandResult，主 Agent 仅在确认前暂停。</td>
           </tr>
           <tr>
             <td><code>src/components/assistant/chat-runtime-provider.tsx</code><br><code>src/components/assistant/chat-workspace.tsx</code></td>
-            <td>实时事件组装、按 ID 去重，以及任务进度、子 Agent 和文件变更时间线展示。</td>
+            <td>解析 command_result、审批结果去重，并渲染命令、cwd、状态、exit code、耗时和截断输出。</td>
           </tr>
           <tr>
-            <td><code>tests/chat-stream.test.mjs</code><br><code>tests/subagent-stream.test.mjs</code><br><code>tests/filesystem-change-event.test.mjs</code><br><code>tests/chat-runtime-stream.test.mjs</code></td>
-            <td>事件编码校验、子 Agent 成败、文件变更安全字段、审批去重和混合时间线回归。</td>
+            <td><code>tests/command-policy.test.mjs</code><br><code>tests/sandbox-executor.test.mjs</code><br><code>tests/execute-command-approval.test.mjs</code><br><code>tests/command-result-event.test.mjs</code></td>
+            <td>allowlist、路径/symlink、Sandbox 不可用、审批前置、结果事件编码和恶意输出安全回归。</td>
           </tr>
         </tbody>
       </table>

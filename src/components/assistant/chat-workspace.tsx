@@ -37,6 +37,7 @@ import {
   Search,
   Send,
   Sparkles,
+  Terminal,
   SunMedium,
   Trash2,
   Wrench,
@@ -1059,6 +1060,7 @@ function AssistantMessage() {
               data: {
                 by_name: {
                   agent_retry: AgentRetryPart,
+                  command_result: CommandResultPart,
                   filesystem_change: FilesystemChangePart,
                   structured_response: StructuredResponsePart,
                   subagent_state: SubagentStatePart,
@@ -1338,6 +1340,155 @@ type FilesystemChangeData = {
   summary: string;
   toolCallId?: string;
 };
+
+type CommandResultData = {
+  args: string[];
+  command: string;
+  cwd: string;
+  durationMs: number;
+  executionId: string;
+  exitCode?: number | null;
+  outputTruncated: boolean;
+  status:
+    | "completed"
+    | "failed"
+    | "timed_out"
+    | "rejected"
+    | "sandbox_unavailable";
+  stderr: string;
+  stdout: string;
+  summary: string;
+};
+
+function CommandResultPart({ data }: DataMessagePartProps) {
+  const result = parseCommandResult(data);
+  if (!result) {
+    return null;
+  }
+
+  const status = getCommandStatusView(result.status);
+  const StatusIcon = status.icon;
+  const commandText = [result.command, ...result.args].join(" ");
+
+  return (
+    <article
+      aria-live="polite"
+      className="my-3 overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50/60 text-sm text-emerald-950"
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-emerald-100 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 font-medium">
+          <Terminal size={15} />
+          <span>命令执行</span>
+        </div>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs text-emerald-800">
+          <StatusIcon size={14} />
+          {status.label}
+        </span>
+      </div>
+      <div className="space-y-2 px-3 py-2 text-[13px] leading-5">
+        <code className="block break-all rounded-lg bg-white/80 px-2 py-1 font-mono text-xs text-emerald-950">
+          {commandText}
+        </code>
+        <div className="text-xs text-emerald-700">
+          工作目录：{result.cwd} · 耗时 {formatDuration(result.durationMs)}
+          {result.exitCode !== undefined && ` · exit code ${result.exitCode ?? "-"}`}
+        </div>
+        <div className="break-words text-emerald-900">{result.summary}</div>
+        {result.stdout && (
+          <details className="rounded-lg border border-emerald-100 bg-white/80">
+            <summary className="cursor-pointer px-2 py-1 text-xs font-medium">
+              标准输出
+            </summary>
+            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border-t border-emerald-100 px-2 py-2 font-mono text-xs leading-5">
+              {result.stdout}
+            </pre>
+          </details>
+        )}
+        {result.stderr && (
+          <details className="rounded-lg border border-red-100 bg-red-50/70">
+            <summary className="cursor-pointer px-2 py-1 text-xs font-medium text-red-800">
+              标准错误
+            </summary>
+            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border-t border-red-100 px-2 py-2 font-mono text-xs leading-5 text-red-800">
+              {result.stderr}
+            </pre>
+          </details>
+        )}
+        {result.outputTruncated && (
+          <div className="text-xs text-amber-700">输出已截断。</div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function parseCommandResult(data: unknown): CommandResultData | null {
+  if (!isPlainRecord(data)) {
+    return null;
+  }
+
+  const validStatus =
+    data.status === "completed" ||
+    data.status === "failed" ||
+    data.status === "timed_out" ||
+    data.status === "rejected" ||
+    data.status === "sandbox_unavailable";
+  if (
+    !validStatus ||
+    !Array.isArray(data.args) ||
+    !data.args.every((arg) => typeof arg === "string") ||
+    typeof data.command !== "string" ||
+    typeof data.cwd !== "string" ||
+    typeof data.durationMs !== "number" ||
+    !Number.isFinite(data.durationMs) ||
+    typeof data.executionId !== "string" ||
+    typeof data.outputTruncated !== "boolean" ||
+    typeof data.stderr !== "string" ||
+    typeof data.stdout !== "string" ||
+    typeof data.summary !== "string"
+  ) {
+    return null;
+  }
+
+  if (
+    data.exitCode !== undefined &&
+    data.exitCode !== null &&
+    typeof data.exitCode !== "number"
+  ) {
+    return null;
+  }
+
+  const commandStatus = data.status as CommandResultData["status"];
+  return {
+    args: data.args,
+    command: data.command,
+    cwd: data.cwd,
+    durationMs: data.durationMs,
+    executionId: data.executionId,
+    ...(data.exitCode !== undefined ? { exitCode: data.exitCode } : {}),
+    outputTruncated: data.outputTruncated,
+    status: commandStatus,
+    stderr: data.stderr,
+    stdout: data.stdout,
+    summary: data.summary,
+  };
+}
+
+function getCommandStatusView(status: CommandResultData["status"]) {
+  if (status === "completed") {
+    return { icon: CheckCircle2, label: "已完成" };
+  }
+  if (status === "timed_out") {
+    return { icon: AlertTriangle, label: "执行超时" };
+  }
+  if (status === "rejected") {
+    return { icon: AlertTriangle, label: "已拒绝" };
+  }
+  if (status === "sandbox_unavailable") {
+    return { icon: AlertTriangle, label: "Sandbox 不可用" };
+  }
+  return { icon: AlertTriangle, label: "执行失败" };
+}
 
 function FilesystemChangePart({ data }: DataMessagePartProps) {
   const change = parseFilesystemChange(data);

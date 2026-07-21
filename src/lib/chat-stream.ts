@@ -1,4 +1,5 @@
 import type { TodoState } from "@/lib/agent/harness/planning/types";
+import type { CommandExecutionStatus } from "@/lib/agent/services/command-execution";
 
 export type SubagentId = "filesystem" | "memory" | "weather";
 export type ToolCallStatus =
@@ -39,6 +40,23 @@ export type FilesystemChangeEvent = {
   summary: string;
   toolCallId?: string;
   type: "filesystem_change";
+};
+
+export type CommandResultEvent = {
+  approvalId?: string;
+  args: string[];
+  command: string;
+  cwd: string;
+  durationMs: number;
+  executionId: string;
+  exitCode?: number | null;
+  finishedAt: string;
+  outputTruncated: boolean;
+  status: CommandExecutionStatus;
+  stderr: string;
+  stdout: string;
+  summary: string;
+  type: "command_result";
 };
 
 export type ChatStreamEvent =
@@ -99,7 +117,8 @@ export type ChatStreamEvent =
     } & TodoState)
   | SubagentStartEvent
   | SubagentEndEvent
-  | FilesystemChangeEvent;
+  | FilesystemChangeEvent
+  | CommandResultEvent;
 
 const CHAT_STREAM_EVENT_TYPES = new Set<ChatStreamEvent["type"]>([
   "text_delta",
@@ -110,6 +129,7 @@ const CHAT_STREAM_EVENT_TYPES = new Set<ChatStreamEvent["type"]>([
   "subagent_start",
   "subagent_end",
   "filesystem_change",
+  "command_result",
 ]);
 
 export function encodeChatSseEvent(event: ChatStreamEvent) {
@@ -159,6 +179,10 @@ export function isChatStreamEvent(
 
   if (candidate.type === "filesystem_change") {
     return isFilesystemChangeEvent(candidate);
+  }
+
+  if (candidate.type === "command_result") {
+    return isCommandResultEvent(candidate);
   }
 
   if (candidate.type === "text_delta") {
@@ -285,6 +309,39 @@ function isFilesystemChangeEvent(value: Partial<ChatStreamEvent>) {
       candidate.status === "failed") &&
     typeof candidate.summary === "string" &&
     (candidate.toolCallId === undefined || typeof candidate.toolCallId === "string")
+  );
+}
+
+function isCommandResultEvent(value: Partial<ChatStreamEvent>) {
+  const candidate = value as Partial<CommandResultEvent>;
+  return (
+    (candidate.approvalId === undefined || typeof candidate.approvalId === "string") &&
+    Array.isArray(candidate.args) &&
+    candidate.args.every((arg) => typeof arg === "string") &&
+    typeof candidate.command === "string" &&
+    typeof candidate.cwd === "string" &&
+    typeof candidate.durationMs === "number" &&
+    Number.isFinite(candidate.durationMs) &&
+    typeof candidate.executionId === "string" &&
+    (candidate.exitCode === undefined ||
+      candidate.exitCode === null ||
+      typeof candidate.exitCode === "number") &&
+    typeof candidate.finishedAt === "string" &&
+    typeof candidate.outputTruncated === "boolean" &&
+    isCommandExecutionStatus(candidate.status) &&
+    typeof candidate.stderr === "string" &&
+    typeof candidate.stdout === "string" &&
+    typeof candidate.summary === "string"
+  );
+}
+
+function isCommandExecutionStatus(value: unknown): value is CommandExecutionStatus {
+  return (
+    value === "completed" ||
+    value === "failed" ||
+    value === "timed_out" ||
+    value === "rejected" ||
+    value === "sandbox_unavailable"
   );
 }
 

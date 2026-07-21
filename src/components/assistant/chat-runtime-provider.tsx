@@ -42,6 +42,7 @@ export function ChatRuntimeProvider({
   workspaceId,
 }: PropsWithChildren<{ tenantHashId: string; workspaceId: string }>) {
   const emittedFilesystemChangeIdsRef = useRef(new Set<string>());
+  const emittedCommandResultIdsRef = useRef(new Set<string>());
   const adapter = useMemo<ChatModelAdapter>(
     () => ({
       async *run({
@@ -67,6 +68,7 @@ export function ChatRuntimeProvider({
             workspaceId,
             emittedFilesystemChangeIds:
               emittedFilesystemChangeIdsRef.current,
+            emittedCommandResultIds: emittedCommandResultIdsRef.current,
           });
           return;
         }
@@ -146,6 +148,7 @@ async function* runApprovalExecutions({
   abortSignal,
   approvalDecisions,
   emittedFilesystemChangeIds,
+  emittedCommandResultIds,
   tenantHashId,
   threadId,
   workspaceId,
@@ -153,6 +156,7 @@ async function* runApprovalExecutions({
   abortSignal: AbortSignal;
   approvalDecisions: ClientApprovalDecision[];
   emittedFilesystemChangeIds: Set<string>;
+  emittedCommandResultIds: Set<string>;
   tenantHashId: string;
   threadId: string;
   workspaceId: string;
@@ -178,11 +182,30 @@ async function* runApprovalExecutions({
     name: "filesystem_change" as const,
     data: change,
   }));
+  const commandResultParts = responses
+    .map((response) =>
+      response.commandResult
+        ? { ...response.commandResult, approvalId: response.approvalId }
+        : undefined,
+    )
+    .filter((result): result is NonNullable<typeof result> => {
+      if (!result || emittedCommandResultIds.has(result.executionId)) {
+        return false;
+      }
+      emittedCommandResultIds.add(result.executionId);
+      return true;
+    })
+    .map((result) => ({
+      type: "data" as const,
+      name: "command_result" as const,
+      data: result,
+    }));
 
   yield {
     content: [
       { type: "text", text: mergeApprovalFinalText(responses) },
       ...filesystemChangeParts,
+      ...commandResultParts,
       {
         type: "data",
         name: "structured_response",
@@ -504,9 +527,11 @@ function createAssistantContentBuilder() {
   const agentRetryParts = new Map<string, ThreadAssistantMessagePart>();
   const subagentParts = new Map<string, ThreadAssistantMessagePart>();
   const filesystemChangeParts = new Map<string, ThreadAssistantMessagePart>();
+  const commandResultParts = new Map<string, ThreadAssistantMessagePart>();
   const toolParts = new Map<string, ToolCallMessagePart>();
   const timelineParts: Array<
     | { id: string; kind: "agent_retry" }
+    | { id: string; kind: "command_result" }
     | { id: string; kind: "filesystem_change" }
     | { id: string; kind: "subagent_state" }
     | { id: string; kind: "tool_call" }
@@ -518,6 +543,7 @@ function createAssistantContentBuilder() {
   function ensureTimelinePart(
     part:
       | { id: string; kind: "agent_retry" }
+      | { id: string; kind: "command_result" }
       | { id: string; kind: "filesystem_change" }
       | { id: string; kind: "subagent_state" }
       | { id: string; kind: "tool_call" },
@@ -594,6 +620,16 @@ function createAssistantContentBuilder() {
           name: "filesystem_change",
           data: event,
         });
+      } else if (event.type === "command_result") {
+        ensureTimelinePart({
+          id: event.executionId,
+          kind: "command_result",
+        });
+        commandResultParts.set(event.executionId, {
+          type: "data",
+          name: "command_result",
+          data: event,
+        });
       } else if (event.type === "todo_update") {
         todoStatePart = {
           type: "data",
@@ -621,6 +657,11 @@ function createAssistantContentBuilder() {
         if (part.kind === "filesystem_change") {
           const filesystemChangePart = filesystemChangeParts.get(part.id);
           return filesystemChangePart ? [filesystemChangePart] : [];
+        }
+
+        if (part.kind === "command_result") {
+          const commandResultPart = commandResultParts.get(part.id);
+          return commandResultPart ? [commandResultPart] : [];
         }
 
         const agentRetryPart = agentRetryParts.get(part.id);

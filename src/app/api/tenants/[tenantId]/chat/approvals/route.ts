@@ -33,6 +33,7 @@ import {
 } from "@/lib/server/pending-action-store";
 import { createRequestLogger, toLogError } from "@/lib/server/logger";
 import { createFilesystemChangeEvent } from "@/lib/chat-stream-projection";
+import { createRejectedCommandResult } from "@/lib/agent/services/command-execution";
 
 type ApprovalRequestBody = {
   approvalId?: unknown;
@@ -444,11 +445,14 @@ async function executeApprovedAction(
     toolCallId: action.toolCallId,
     toolName: action.toolName,
   });
+  const commandResult =
+    "commandResult" in result ? result.commandResult : undefined;
 
   return createTerminalApprovalResponse({
     action,
     decision: "approve",
     ...(filesystemChange ? { filesystemChange } : {}),
+    ...(commandResult ? { commandResult } : {}),
     finalText: result.summary,
     isError: !result.ok,
     ok: result.ok,
@@ -492,6 +496,10 @@ function createRejectedApprovalResponse({
     toolCallId: action.toolCallId,
     toolName: action.toolName,
   });
+  const commandResult =
+    action.toolName === "execute_command"
+      ? createRejectedCommandResult(action.args, finalText)
+      : undefined;
 
   return {
     approvalId: action.actionId,
@@ -501,6 +509,7 @@ function createRejectedApprovalResponse({
       ? { followUpMessage: guidance }
       : {}),
     finalText,
+    ...(commandResult ? { commandResult } : {}),
     ...(filesystemChange ? { filesystemChange } : {}),
     isError: false,
     ok: true,
@@ -542,6 +551,7 @@ function createTerminalApprovalResponse({
   ok,
   status,
   filesystemChange,
+  commandResult,
   toolResult,
 }: {
   action: StoredPendingAction;
@@ -551,6 +561,7 @@ function createTerminalApprovalResponse({
   ok: boolean;
   status: ApprovalActionStatus;
   filesystemChange?: ApprovalExecutionResponse["filesystemChange"];
+  commandResult?: ApprovalExecutionResponse["commandResult"];
   toolResult: ApprovalToolResult;
 }): ApprovalExecutionResponse {
   return {
@@ -558,6 +569,7 @@ function createTerminalApprovalResponse({
     approved: status === "executed" || status === "failed",
     decision,
     finalText,
+    ...(commandResult ? { commandResult } : {}),
     ...(filesystemChange ? { filesystemChange } : {}),
     isError,
     ok,

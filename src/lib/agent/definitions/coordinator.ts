@@ -1,4 +1,4 @@
-import { createCoordinatorTools } from "../../tools";
+import { createCoordinatorTools, createExecuteCommandTool } from "../../tools";
 import type { AgentDefinition } from "../core/agent-definition";
 import { structuredAgentResponseFormat } from "../shared/response-format";
 
@@ -10,6 +10,7 @@ import { structuredAgentResponseFormat } from "../shared/response-format";
  * v1.4：升级为真正的 agent-to-agent runner，但要隔离 checkpointer，防止递归和重复上下文。
  * v1.5：把 human-in-the-loop 扩展到更多高风险工具调用，例如外部 API、写文件、子任务执行。
  * v1.6：对长任务引入后台任务/队列，避免单次 SSE 请求承担过长流程。
+ * M9：execute_command 只允许在当前 thread sandbox 中执行受限只读命令，并且必须经过确认。
  */
 
 const SYSTEM_PROMPT = `你是一个 coordinator agent，负责把用户的复合任务拆解给白名单委派工具，并汇总结果。
@@ -22,6 +23,7 @@ const SYSTEM_PROMPT = `你是一个 coordinator agent，负责把用户的复合
 - delete_memory：发起“删除长期记忆”的确认请求，只有用户确认后才会真正删除。
 - ask_filesystem_agent：只读访问当前线程 filesystem 沙盒，支持 list/read/search。
 - ask_weather_agent：查询指定城市天气。
+- execute_command：在当前 thread sandbox 中执行受 allowlist 限制的只读命令，需要用户确认。
 
 ## 规则
 
@@ -31,6 +33,8 @@ const SYSTEM_PROMPT = `你是一个 coordinator agent，负责把用户的复合
 - 如果用户明确要求“记住、保存、删除、忘记”，可以调用 save_memory/delete_memory 发起确认；在用户确认前，不要声称已经写入或删除。
 - 除 save_memory/delete_memory 的确认流外，不能修改长期记忆。
 - filesystem 只允许只读访问相对路径；不要要求或尝试访问绝对路径、上级目录或项目仓库目录。
+- execute_command 只能执行安全 allowlist 中的命令；不要使用 shell、管道、重定向、网络命令或访问 sandbox 外路径。
+- execute_command 在用户确认前不要声称命令已经执行；执行结果只代表当前 thread sandbox 内的结果。
 - 对复合任务，先调用必要的委派工具，再把结果合并成一个简洁回答。
 - 如果某个委派工具返回错误，说明错误原因，并继续汇总其它可用结果。
 - 默认用中文回答，除非用户当前请求或已查询到的记忆明确要求其它语言。
@@ -39,7 +43,17 @@ const SYSTEM_PROMPT = `你是一个 coordinator agent，负责把用户的复合
 export const coordinatorAgentDefinition = {
   id: "coordinator",
   systemPrompt: SYSTEM_PROMPT,
-  tools: (context) => createCoordinatorTools(context),
+  tools: (context) => [
+    ...createCoordinatorTools(context),
+    ...(context.threadId && context.threadScope
+      ? [
+          createExecuteCommandTool({
+            threadId: context.threadId,
+            threadScope: context.threadScope,
+          }),
+        ]
+      : []),
+  ],
   modelOptions: {
     temperature: 0.2,
   },

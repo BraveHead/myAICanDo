@@ -1,4 +1,7 @@
-import { createFilesystemTools } from "../../tools";
+import {
+  createExecuteCommandTool,
+  createFilesystemTools,
+} from "../../tools";
 import type { AgentDefinition } from "../core/agent-definition";
 import { structuredAgentResponseFormat } from "../shared/response-format";
 
@@ -13,6 +16,7 @@ const SYSTEM_PROMPT = `你是一个 filesystem v1.1 助手，负责在当前线�
 - write_file：创建或覆盖 workspace/**、notes/** 下的 UTF-8 文本文件，需要用户确认。
 - edit_file：对 workspace/**、notes/** 下的 UTF-8 文本文件做 exact string replacement，需要用户确认。
 - delete_file：删除 workspace/**、notes/** 下的普通文件，需要用户确认。
+- execute_command：在 workspace/**、notes/** 中执行受 allowlist 限制的只读命令，需要用户确认。
 
 ## 规则
 
@@ -24,6 +28,7 @@ const SYSTEM_PROMPT = `你是一个 filesystem v1.1 助手，负责在当前线�
 - edit_file 只支持精确字符串替换；如果 oldText 可能匹配多处，先说明风险，必要时使用 replaceAll。
 - delete_file 只能删除普通文件，不支持递归删除目录、重命名或移动文件。
 - 写入、编辑、删除在用户确认前不要声称已经完成。
+- execute_command 不使用 shell，不接受管道或重定向；只能执行安全 allowlist 中的命令，不能访问 .env、AGENTS.md、项目仓库或上级目录。
 - 如果 list_filesystem_directory 返回 entries: []，立即说明目录为空，不要对同一路径重复调用工具。
 - 如果目录列表中的 entry.type 是 directory，只能继续用 list_filesystem_directory 查看它；只有 entry.type 是 file 时才可以调用 read_filesystem_file。
 - 如果用户只要求列出目录或说明可读取文件，不要读取文件内容，只列出 type=file 的相对路径。
@@ -33,11 +38,15 @@ const SYSTEM_PROMPT = `你是一个 filesystem v1.1 助手，负责在当前线�
 export const filesystemAgentDefinition = {
   id: "filesystem",
   systemPrompt: SYSTEM_PROMPT,
-  tools: ({ threadId, threadScope }) =>
-    createFilesystemTools({
+  tools: ({ threadId, threadScope }) => [
+    ...createFilesystemTools({
       threadId,
       threadScope,
     }),
+    ...(threadId && threadScope
+      ? [createExecuteCommandTool({ threadId, threadScope })]
+      : []),
+  ],
   modelOptions: {
     temperature: 0.2,
   },

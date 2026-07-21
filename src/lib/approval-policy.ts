@@ -16,6 +16,12 @@ import {
   type SaveUserMemoryResult,
 } from "@/lib/agent/services/memory-service";
 import {
+  executeCommandInSandbox,
+  prepareCommandApprovalPreview,
+  validateExecuteCommandArgs as validateExecuteCommandArgsFromService,
+  type CommandExecutionToolResult,
+} from "@/lib/agent/services/command-execution";
+import {
   type ApprovalGatedToolName,
   type ApprovalOption,
   type ApprovalPreview,
@@ -33,7 +39,8 @@ export type ApprovalToolMutationResult =
   | EditFilesystemFileResult
   | WriteFilesystemFileResult
   | DeleteUserMemoryResult
-  | SaveUserMemoryResult;
+  | SaveUserMemoryResult
+  | CommandExecutionToolResult;
 
 type ValidationSuccess = {
   ok: true;
@@ -259,6 +266,15 @@ const approvalPolicies: Record<ApprovalGatedToolName, ApprovalPolicy> = {
       );
     },
   },
+  execute_command: {
+    label: "执行命令",
+    preparePreview: async (args, context) =>
+      prepareCommandApprovalPreview(args, context),
+    supportsEditArgs: true,
+    toolName: "execute_command",
+    validateArgs: validateExecuteCommandArgs,
+    execute: (args, context) => executeCommandInSandbox(args, context),
+  },
 };
 
 export function getApprovalPolicy(toolName: string) {
@@ -362,7 +378,9 @@ export function getApprovalActionLabel(toolName: ApprovalGatedToolName) {
 export function getApprovalSubject(toolName: ApprovalGatedToolName) {
   return toolName === "save_memory" || toolName === "delete_memory"
     ? "记忆操作"
-    : "文件操作";
+    : toolName === "execute_command"
+      ? "命令执行"
+      : "文件操作";
 }
 
 export function createInvalidToolArgsResult(message: string) {
@@ -473,6 +491,20 @@ function validateDeleteFileArgs(args: unknown): ApprovalValidationResult {
   return path
     ? { ok: true, value: { path } }
     : { message: "delete_file.path must be a non-empty string.", ok: false };
+}
+
+function validateExecuteCommandArgs(args: unknown): ApprovalValidationResult {
+  return validateCommandArgs(args);
+}
+
+function validateCommandArgs(args: unknown): ApprovalValidationResult {
+  // The command service owns the allowlist and path checks so the agent,
+  // approval API, and edited-argument flow all share the same validation.
+  // Keep the adapter here to preserve the approval registry's common shape.
+  const result = validateExecuteCommandArgsFromService(args);
+  return result.ok
+    ? { ok: true, value: result.value }
+    : { message: result.message, ok: false };
 }
 
 function getApprovalRejectDescription(toolName: ApprovalGatedToolName) {
