@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 const { createSandboxExecutor } = await import(
-  "../src/lib/agent/services/command-execution.ts"
+  "../src/lib/command-execution/sandbox-executor.ts"
 );
 
 const previousBackend = process.env.EXECUTION_SANDBOX_BACKEND;

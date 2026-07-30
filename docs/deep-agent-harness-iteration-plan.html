@@ -839,7 +839,7 @@
         <article class="milestone">
           <div class="tag">M9</div>
           <div>
-            <h3>Sandbox / Execute：安全代码执行能力（当前迭代）</h3>
+            <h3>Sandbox / Execute：安全代码执行能力（已完成）</h3>
             <p class="why">在 M7 审批状态机和 M8 实时事件基础上，只允许当前 thread sandbox 内的受限只读命令和测试命令，禁止降级为本机裸 Shell。</p>
             <div class="steps">
               <div class="step-box">
@@ -874,21 +874,31 @@
         <article class="milestone">
           <div class="tag">M10</div>
           <div>
-            <h3>Persistent Execute：后台任务与 stdout 分片流式（M9 完成后）</h3>
+            <h3>Persistent Execute：PostgreSQL 持久任务、独立 Worker 与可重连 SSE（当前迭代）</h3>
             <p class="why">M9 v1 只在审批后同步返回最终结果；长时间命令、取消、重试、后台任务和实时 stdout/stderr 需要独立的持久化执行模型。</p>
             <div class="steps">
               <div class="step-box">
                 <strong>任务持久化</strong>
-                增加可恢复的执行任务状态、取消和过期处理，避免单次 HTTP/SSE 请求承担长任务。
+                使用 <code>assistant_command_executions</code> 保存 scope、审批、参数、attempt、lease、取消和最终结果；审批与首次 execution 在同一事务中创建，重复确认返回同一任务。
               </div>
               <div class="step-box">
-                <strong>实时输出</strong>
-                以受限分片事件传递 stdout/stderr，处理背压、断线恢复、重复片段和最终结果合并。
+                <strong>独立 Worker</strong>
+                Bun Worker 以 <code>FOR UPDATE SKIP LOCKED</code> 原子领取任务，默认并发 2；5 秒心跳、15 秒 lease，Worker 丢失后标记 <code>failed(worker_lost)</code> 且不自动重跑。
               </div>
               <div class="step-box">
-                <strong>边界</strong>
-                继续复用 M9 SandboxExecutor、approval、workspace/thread scope 和审计字段，不扩大命令 allowlist。
+                <strong>持久事件与 UI</strong>
+                <code>assistant_command_execution_events</code> 保存全局递增 ID 的 state/output/result；SSE 支持 <code>Last-Event-ID</code>，工具卡按 <code>toolCallId</code> 恢复、续订、取消和手动重试。
               </div>
+            </div>
+            <div class="note">
+              <strong>M10 边界：</strong>
+              继续复用 M9 的 allowlist、只读目录、禁网、30 秒默认/120 秒最大超时和 128 KiB 总输出上限；stdout/stderr 事件单片不超过 8 KiB。
+              只允许用户手动重试，最多执行 3 次；不自动恢复 Agent checkpoint，也不把完整输出注入 Agent 上下文。
+            </div>
+            <div class="note">
+              <strong>M10 运维：</strong>
+              Route Handler 只负责鉴权、入队、查询、取消、重试和事件订阅，不使用 <code>after()</code> 执行命令。
+              Worker SIGTERM 时停止领取、终止当前进程组并记录 <code>worker_shutdown</code>；事件保留 7 天，execution 元数据保留 30 天。
             </div>
           </div>
         </article>
@@ -898,20 +908,20 @@
     <section id="first">
       <h2 class="section"><span class="num">§5</span>第一步建议</h2>
       <div class="callout warn">
-        <strong>当前迭代从 M9：Sandbox / Execute 开始。</strong>
-        M8 Streaming v2 已完成实时任务、子 Agent 生命周期和文件变更投影；当前应在审批前置和 workspace/thread scope 校验基础上接入安全代码执行，并保持不落裸 Shell 的硬边界。
+        <strong>当前迭代为 M10：Persistent Execute。</strong>
+        M9 已完成受限命令、审批闭环与安全 Sandbox；当前在不扩大命令能力的前提下，把同步执行升级为 PostgreSQL 持久任务、独立 Bun Worker、可重连 SSE 和线程范围工具卡恢复。
       </div>
 
-      <h3>M9 的拆分顺序</h3>
+      <h3>M10 的拆分顺序</h3>
       <ol>
-        <li>先落契约与策略：定义 <code>ExecuteCommandArgs</code>、结果/事件类型、allowlist、参数总长、timeout、stdout/stderr 限额和错误码。</li>
-        <li>实现 <code>SandboxExecutor</code> 抽象及 macOS/Docker backend；固定环境变量、关闭网络、只读挂载 workspace/notes，注入 Mock 测试，不允许 child_process 裸执行 fallback。</li>
-        <li>将命令工具接入 coordinator/filesystem 主 Agent 和 M7 approval registry；确认前只创建 pending action，approve 原子领取执行权，reject/edit_args/guidance 均重新校验并保持幂等。</li>
-        <li>扩展 <code>ChatStreamEvent</code> 和 <code>ChatRuntimeProvider</code>，按 <code>executionId</code> 去重审批缓存结果，并在 <code>ChatWorkspace</code> 展示纯文本命令结果卡片。</li>
-        <li>补充 allowlist、路径/symlink、超时、输出截断、隔离不可用、审批 scope、SSE 校验和恶意 stdout 测试，最后完成 Chrome 回归；M10 再做后台持久化执行和 stdout 分片流式。</li>
+        <li>建立 execution、event 和 worker heartbeat 三张持久表，先固定状态机、attempt、lease、保留期与 scope 索引。</li>
+        <li>扩展 <code>SandboxExecutor.execute()</code>，支持固定 executionId、AbortSignal、异步输出回调、进程组终止和 Docker 容器清理。</li>
+        <li>增加独立 Bun Worker，以 <code>SKIP LOCKED</code> 并发领取、续租、取消检查和 SIGTERM 收尾；Worker 不健康时拒绝入队。</li>
+        <li>接入审批原子入队，以及 list/events/cancel/retry Route Handler；SSE 使用持久事件 ID 补发并在终态关闭。</li>
+        <li>增加 thread-scoped execution provider，把实时状态挂回原工具卡；刷新和切换线程只重建订阅，不影响后台任务。</li>
       </ol>
 
-      <h3>M9 关键改动文件</h3>
+      <h3>M10 关键改动文件</h3>
       <table>
         <thead>
           <tr>
@@ -921,24 +931,28 @@
         </thead>
         <tbody>
           <tr>
-            <td><code>src/lib/agent/services/command-execution.ts</code><br><code>src/lib/tools/execute-command-tool.ts</code></td>
-            <td>定义命令 allowlist、thread sandbox 路径解析、SandboxExecutor、macOS/Docker backend、超时和输出限制。</td>
+            <td><code>src/lib/command-execution/contracts.ts</code><br><code>src/lib/command-execution/command-policy.ts</code></td>
+            <td>定义持久任务/事件协议，并集中维护命令 allowlist、参数、路径、超时与审批预览策略。</td>
           </tr>
           <tr>
-            <td><code>src/lib/approval-policy.ts</code><br><code>src/lib/approval-actions.ts</code></td>
-            <td>将 execute_command 纳入统一审批策略、预览、编辑参数和执行结果类型。</td>
+            <td><code>src/lib/command-execution/execution-service.ts</code><br><code>src/lib/command-execution/execution-repository.ts</code></td>
+            <td>由领域服务编排入队、查询、取消和重试，Repository 统一封装 execution、event、heartbeat 表及 SKIP LOCKED、lease 和清理。</td>
           </tr>
           <tr>
-            <td><code>src/app/api/tenants/[tenantId]/chat/approvals/route.ts</code><br><code>src/lib/agent/core/agent-runner.ts</code></td>
-            <td>复用 M7 pending action scope 和原子执行状态机，审批响应返回 commandResult，主 Agent 仅在确认前暂停。</td>
+            <td><code>src/lib/command-execution/sandbox-executor.ts</code><br><code>src/workers/command-execution-worker.ts</code></td>
+            <td>SandboxExecutor 提供固定 ID、AbortSignal、输出背压和进程清理；独立 Worker 只负责领取、执行、续租、取消和 SIGTERM 调度。</td>
           </tr>
           <tr>
-            <td><code>src/components/assistant/chat-runtime-provider.tsx</code><br><code>src/components/assistant/chat-workspace.tsx</code></td>
-            <td>解析 command_result、审批结果去重，并渲染命令、cwd、状态、exit code、耗时和截断输出。</td>
+            <td><code>src/app/api/tenants/[tenantId]/chat/approvals/route.ts</code><br><code>src/app/api/tenants/[tenantId]/chat/executions/**</code></td>
+            <td>命令审批改为 HTTP 202 持久入队；提供线程范围 list、可重连 events SSE、幂等 cancel 和手动 retry。</td>
           </tr>
           <tr>
-            <td><code>tests/command-policy.test.mjs</code><br><code>tests/sandbox-executor.test.mjs</code><br><code>tests/execute-command-approval.test.mjs</code><br><code>tests/command-result-event.test.mjs</code></td>
-            <td>allowlist、路径/symlink、Sandbox 不可用、审批前置、结果事件编码和恶意输出安全回归。</td>
+            <td><code>src/components/assistant/command-execution-provider.tsx</code><br><code>src/components/assistant/chat-workspace.tsx</code></td>
+            <td>按 thread 恢复 PostgreSQL 快照并续订持久事件，按 toolCallId 把状态、实时输出、取消和重试挂回原命令工具卡。</td>
+          </tr>
+          <tr>
+            <td><code>tests/persistent-command-execution.test.mjs</code><br><code>tests/command-result-event.test.mjs</code></td>
+            <td>状态机、终态兼容、持久事件去重、UTF-8 8 KiB 分片、固定 executionId，以及 heartbeat/SKIP LOCKED/worker_lost 契约回归。</td>
           </tr>
         </tbody>
       </table>

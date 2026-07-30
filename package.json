@@ -8,6 +8,7 @@
     "hash-password": "node scripts/hash-password.mjs",
     "seed:saas": "node scripts/seed-saas.mjs",
     "start": "next start",
+    "worker:commands": "bun src/workers/command-execution-worker.ts",
     "lint": "eslint",
     "typecheck": "tsc --noEmit"
   },

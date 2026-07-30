@@ -80,6 +80,14 @@ import {
   loadWorkspacesFromServer,
   type ClientWorkspace,
 } from "@/lib/workspace-client";
+import {
+  CommandExecutionProvider,
+  useCommandExecution,
+} from "@/components/assistant/command-execution-provider";
+import {
+  isCommandExecutionTerminalStatus,
+  type CommandExecutionSnapshot,
+} from "@/lib/command-execution/contracts";
 
 type Suggestion = {
   label: string;
@@ -210,7 +218,7 @@ export function ChatWorkspace({
   return (
     <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-white text-[#121212]">
       <section className="flex min-h-0 flex-1 p-3 sm:p-4">
-        <div className="flex min-h-0 flex-1 overflow-hidden rounded-[22px] border border-[#e6e6e6] bg-white shadow-[0_1px_10px_rgba(0,0,0,0.04)]">
+        <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-[22px] border border-[#e6e6e6] bg-white shadow-[0_1px_10px_rgba(0,0,0,0.04)]">
           <ChatWorkspaceContent
             initialThreadId={initialThreadId}
             tenantHashId={tenantHashId}
@@ -236,6 +244,8 @@ function ChatWorkspaceContent({
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const switchingRef = useRef(false);
   const previousRunningRef = useRef(false);
 
@@ -460,6 +470,7 @@ function ChatWorkspaceContent({
 
   const handleNewThread = useCallback(() => {
     const nextThread = createTransientThread();
+    setMobileSidebarOpen(false);
     switchingRef.current = true;
     aui.thread().reset();
     queueMicrotask(() => {
@@ -476,27 +487,62 @@ function ChatWorkspaceContent({
   const handleSelectThread = useCallback(
     (threadId: string) => {
       if (threadId === activeThreadId) {
+        setMobileSidebarOpen(false);
         return;
       }
 
+      setMobileSidebarOpen(false);
       selectThread(threadId);
     },
     [activeThreadId, selectThread],
   );
 
+  const handleToggleSidebar = useCallback(() => {
+    if (window.matchMedia("(min-width: 48rem)").matches) {
+      setDesktopSidebarOpen((open) => !open);
+      return;
+    }
+
+    setMobileSidebarOpen((open) => !open);
+  }, []);
+
   return (
     <>
-      <aside className="hidden min-h-0 w-[252px] shrink-0 flex-col border-r border-[#f0f0f0] bg-[#fcfcfc] p-4 md:flex">
-        <div className="mb-8 flex items-center gap-3 px-2 pt-3">
-          <Bot size={24} strokeWidth={2.4} />
-          <span className="min-w-0">
-            <span className="block text-[15px] font-semibold">
-              assistant-ui
-            </span>
-            <span className="block truncate font-mono text-xs text-[#777777]">
-              {tenantHashId}
+      {mobileSidebarOpen && (
+        <button
+          aria-label="关闭侧栏"
+          className="absolute inset-0 z-10 bg-black/20 md:hidden"
+          onClick={() => setMobileSidebarOpen(false)}
+          type="button"
+        />
+      )}
+      <aside
+        className={`min-h-0 w-[252px] shrink-0 flex-col border-r border-[#f0f0f0] bg-[#fcfcfc] p-4 max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-20 max-md:shadow-xl ${
+          mobileSidebarOpen ? "max-md:flex" : "max-md:hidden"
+        } ${desktopSidebarOpen ? "md:flex" : "md:hidden"}`}
+        id="chat-sidebar"
+      >
+        <div className="mb-8 flex items-center justify-between gap-3 px-2 pt-3">
+          <span className="flex min-w-0 items-center gap-3">
+            <Bot className="shrink-0" size={24} strokeWidth={2.4} />
+            <span className="min-w-0">
+              <span className="block text-[15px] font-semibold">
+                assistant-ui
+              </span>
+              <span className="block truncate font-mono text-xs text-[#777777]">
+                {tenantHashId}
+              </span>
             </span>
           </span>
+          <button
+            aria-label="关闭侧栏"
+            className="grid size-8 shrink-0 place-items-center rounded-md hover:bg-[#eaeaea] md:hidden"
+            onClick={() => setMobileSidebarOpen(false)}
+            title="关闭侧栏"
+            type="button"
+          >
+            <X size={18} />
+          </button>
         </div>
 
         <button
@@ -565,8 +611,10 @@ function ChatWorkspaceContent({
         <div className="flex h-[60px] shrink-0 items-center justify-between px-5 sm:px-8">
           <div className="flex min-w-0 items-center gap-4">
             <button
+              aria-controls="chat-sidebar"
               className="grid size-8 place-items-center rounded-md hover:bg-[#f5f5f5]"
-              title="Toggle sidebar"
+              onClick={handleToggleSidebar}
+              title="展开或收起侧栏"
               type="button"
             >
               <PanelLeft size={18} />
@@ -601,7 +649,13 @@ function ChatWorkspaceContent({
           </div>
         </div>
 
-        <Thread />
+        <CommandExecutionProvider
+          tenantHashId={tenantHashId}
+          threadId={activeThreadId}
+          workspaceId={workspaceId}
+        >
+          <Thread />
+        </CommandExecutionProvider>
       </section>
 
       {memoryPanelOpen && (
@@ -1354,7 +1408,9 @@ type CommandResultData = {
     | "failed"
     | "timed_out"
     | "rejected"
-    | "sandbox_unavailable";
+    | "sandbox_unavailable"
+    | "cancelled"
+    | "expired";
   stderr: string;
   stdout: string;
   summary: string;
@@ -1432,7 +1488,9 @@ function parseCommandResult(data: unknown): CommandResultData | null {
     data.status === "failed" ||
     data.status === "timed_out" ||
     data.status === "rejected" ||
-    data.status === "sandbox_unavailable";
+    data.status === "sandbox_unavailable" ||
+    data.status === "cancelled" ||
+    data.status === "expired";
   if (
     !validStatus ||
     !Array.isArray(data.args) ||
@@ -1486,6 +1544,12 @@ function getCommandStatusView(status: CommandResultData["status"]) {
   }
   if (status === "sandbox_unavailable") {
     return { icon: AlertTriangle, label: "Sandbox 不可用" };
+  }
+  if (status === "cancelled") {
+    return { icon: X, label: "已取消" };
+  }
+  if (status === "expired") {
+    return { icon: AlertTriangle, label: "已过期" };
   }
   return { icon: AlertTriangle, label: "执行失败" };
 }
@@ -1760,6 +1824,7 @@ function ToolCallPart({
   result,
   respondToApproval,
   status,
+  toolCallId,
   toolName,
 }: ToolCallMessagePartProps) {
   const [argsEditorOpen, setArgsEditorOpen] = useState(false);
@@ -1770,6 +1835,7 @@ function ToolCallPart({
     null,
   );
   const retryInfo = getToolRetryInfo(args);
+  const commandExecution = useCommandExecution(toolCallId);
   const running = status.type === "running";
   const approvalPending =
     approval !== undefined &&
@@ -1832,6 +1898,9 @@ function ToolCallPart({
           </div>
         )}
         <ToolPayload label="参数" value={displayArgs} />
+        {toolName === "execute_command" && commandExecution.execution && (
+          <CommandExecutionCard state={commandExecution} />
+        )}
         {approvalPending && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
             <div className="font-medium">
@@ -1841,12 +1910,15 @@ function ToolCallPart({
             <div className="mt-2 flex flex-wrap gap-2">
               <button
                 className="rounded-md bg-[#111111] px-3 py-1.5 font-medium text-white transition-colors hover:bg-[#303030]"
-                onClick={() =>
+                onClick={() => {
                   respondToApproval({
                     approved: true,
                     optionId: "approve-once",
-                  })
-                }
+                  });
+                  if (toolName === "execute_command") {
+                    commandExecution.poke?.();
+                  }
+                }}
                 type="button"
               >
                 确认执行
@@ -1917,6 +1989,9 @@ function ToolCallPart({
                           version: 1,
                         }),
                       });
+                      if (toolName === "execute_command") {
+                        commandExecution.poke?.();
+                      }
                     } catch {
                       setApprovalFormError("JSON 参数格式不正确。");
                     }
@@ -1986,6 +2061,139 @@ function ToolCallPart({
   );
 }
 
+function CommandExecutionCard({
+  state,
+}: {
+  state: ReturnType<typeof useCommandExecution>;
+}) {
+  const execution = state.execution;
+  if (!execution) {
+    return null;
+  }
+  const view = getPersistentCommandStatusView(execution.status);
+  const StatusIcon = view.icon;
+  const active =
+    execution.status === "queued" ||
+    execution.status === "running" ||
+    execution.status === "cancel_requested";
+  const retryable =
+    isCommandExecutionTerminalStatus(execution.status) &&
+    execution.status !== "completed" &&
+    execution.attempt < execution.maxAttempts;
+
+  return (
+    <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs text-emerald-950">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 font-medium">
+          <StatusIcon
+            className={execution.status === "running" ? "animate-spin" : undefined}
+            size={14}
+          />
+          {view.label} · 第 {execution.attempt}/{execution.maxAttempts} 次执行
+        </span>
+        <span className="font-mono text-[11px] text-emerald-700">
+          {execution.executionId}
+        </span>
+      </div>
+      <code className="mt-2 block break-all rounded-md bg-white/80 px-2 py-1 font-mono text-[11px]">
+        {[execution.command, ...execution.args].join(" ")}
+      </code>
+      <div className="mt-1 text-[11px] text-emerald-700">
+        工作目录：{execution.cwd}
+        {execution.result
+          ? ` · 耗时 ${formatDuration(execution.result.durationMs)}`
+          : ""}
+      </div>
+      <div className="mt-1 break-words">{execution.summary}</div>
+      {execution.stdout && (
+        <details
+          className="mt-2 rounded-md border border-emerald-100 bg-white/80"
+          open={active}
+        >
+          <summary className="cursor-pointer px-2 py-1 font-medium">
+            标准输出
+          </summary>
+          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border-t border-emerald-100 px-2 py-2 font-mono text-[11px] leading-5">
+            {execution.stdout}
+          </pre>
+        </details>
+      )}
+      {execution.stderr && (
+        <details className="mt-2 rounded-md border border-red-100 bg-red-50/80">
+          <summary className="cursor-pointer px-2 py-1 font-medium text-red-800">
+            标准错误
+          </summary>
+          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border-t border-red-100 px-2 py-2 font-mono text-[11px] leading-5 text-red-800">
+            {execution.stderr}
+          </pre>
+        </details>
+      )}
+      {execution.outputTruncated && (
+        <div className="mt-2 text-amber-700">
+          输出达到 128 KiB 上限，后续内容已截断。
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap gap-2">
+        {active && execution.status !== "cancel_requested" && state.cancel && (
+          <button
+            className="rounded-md border border-red-200 bg-white px-2.5 py-1 font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+            disabled={state.mutating}
+            onClick={() => void state.cancel?.(execution.executionId)}
+            type="button"
+          >
+            {state.mutating ? "处理中…" : "取消执行"}
+          </button>
+        )}
+        {retryable && state.retry && (
+          <button
+            className="rounded-md border border-emerald-300 bg-white px-2.5 py-1 font-medium text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+            disabled={state.mutating}
+            onClick={() => void state.retry?.(execution.executionId)}
+            type="button"
+          >
+            {state.mutating ? "处理中…" : "重新执行"}
+          </button>
+        )}
+      </div>
+      {state.error && (
+        <div className="mt-2 rounded-md bg-red-50 px-2 py-1 text-red-700">
+          {state.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getPersistentCommandStatusView(
+  status: CommandExecutionSnapshot["status"],
+) {
+  if (status === "queued") {
+    return { icon: Circle, label: "排队中" };
+  }
+  if (status === "running") {
+    return { icon: LoaderCircle, label: "执行中" };
+  }
+  if (status === "cancel_requested") {
+    return { icon: LoaderCircle, label: "正在取消" };
+  }
+  if (status === "completed") {
+    return { icon: CheckCircle2, label: "已完成" };
+  }
+  if (status === "timed_out") {
+    return { icon: AlertTriangle, label: "执行超时" };
+  }
+  if (status === "sandbox_unavailable") {
+    return { icon: AlertTriangle, label: "Sandbox 不可用" };
+  }
+  if (status === "cancelled") {
+    return { icon: X, label: "已取消" };
+  }
+  if (status === "expired") {
+    return { icon: AlertTriangle, label: "已过期" };
+  }
+  return { icon: AlertTriangle, label: "执行失败" };
+}
+
 function hasApprovalOption(
   options: readonly { id: string }[],
   optionId: string,
@@ -2043,16 +2251,56 @@ type FilesystemApprovalPreviewData =
       summary: string;
     };
 
+type CommandApprovalPreviewData = {
+  args: string[];
+  command: string;
+  cwd: string;
+  filesystem: "read-only";
+  kind: "command";
+  network: "disabled";
+  summary: string;
+  timeoutMs: number;
+};
+
 type ApprovalPreviewData =
+  | CommandApprovalPreviewData
   | FilesystemApprovalPreviewData
   | MemoryApprovalPreviewData;
 
 function ApprovalPreview({ preview }: { preview: ApprovalPreviewData }) {
+  if (isCommandPreview(preview)) {
+    return <CommandApprovalPreview preview={preview} />;
+  }
   if (isFilesystemPreview(preview)) {
     return <FilesystemApprovalPreview preview={preview} />;
   }
 
   return <MemoryApprovalPreview preview={preview} />;
+}
+
+function CommandApprovalPreview({
+  preview,
+}: {
+  preview: CommandApprovalPreviewData;
+}) {
+  return (
+    <div className="mt-2 space-y-2 rounded-md border border-amber-200 bg-white/70 px-3 py-2">
+      <div>
+        <span className="font-medium">命令：</span>
+        <code className="font-mono">
+          {[preview.command, ...preview.args].join(" ")}
+        </code>
+      </div>
+      <div>
+        <span className="font-medium">工作目录：</span>
+        {preview.cwd}
+      </div>
+      <div>
+        文件系统只读 · 网络关闭 · 超时 {formatDuration(preview.timeoutMs)}
+      </div>
+      <div>{preview.summary}</div>
+    </div>
+  );
 }
 
 function MemoryApprovalPreview({
@@ -2172,6 +2420,10 @@ function getApprovalPreview(approval: unknown): ApprovalPreviewData | null {
   }
 
   const preview = approval.preview;
+  const commandPreview = parseCommandApprovalPreview(preview);
+  if (commandPreview) {
+    return commandPreview;
+  }
   const filesystemPreview = parseFilesystemApprovalPreview(preview);
   if (filesystemPreview) {
     return filesystemPreview;
@@ -2208,6 +2460,34 @@ function getApprovalPreview(approval: unknown): ApprovalPreviewData | null {
     replacedValue:
       typeof preview.replacedValue === "string" ? preview.replacedValue : null,
     willReplace: preview.willReplace === true,
+  };
+}
+
+function parseCommandApprovalPreview(
+  preview: Record<string, unknown>,
+): CommandApprovalPreviewData | null {
+  if (
+    preview.kind !== "command" ||
+    typeof preview.command !== "string" ||
+    !Array.isArray(preview.args) ||
+    !preview.args.every((arg) => typeof arg === "string") ||
+    typeof preview.cwd !== "string" ||
+    preview.filesystem !== "read-only" ||
+    preview.network !== "disabled" ||
+    typeof preview.summary !== "string" ||
+    typeof preview.timeoutMs !== "number"
+  ) {
+    return null;
+  }
+  return {
+    args: preview.args,
+    command: preview.command,
+    cwd: preview.cwd,
+    filesystem: preview.filesystem,
+    kind: "command",
+    network: preview.network,
+    summary: preview.summary,
+    timeoutMs: preview.timeoutMs,
   };
 }
 
@@ -2302,6 +2582,12 @@ function getApprovalSubject(
   preview: ApprovalPreviewData | null,
 ) {
   if (
+    toolName === "execute_command" ||
+    (preview && isCommandPreview(preview))
+  ) {
+    return "命令执行";
+  }
+  if (
     (preview && isFilesystemPreview(preview)) ||
     toolName === "write_file" ||
     toolName === "edit_file" ||
@@ -2311,6 +2597,12 @@ function getApprovalSubject(
   }
 
   return "记忆操作";
+}
+
+function isCommandPreview(
+  preview: ApprovalPreviewData,
+): preview is CommandApprovalPreviewData {
+  return "kind" in preview && preview.kind === "command";
 }
 
 function isFilesystemPreview(

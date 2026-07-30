@@ -33,7 +33,12 @@ import {
 } from "@/lib/server/pending-action-store";
 import { createRequestLogger, toLogError } from "@/lib/server/logger";
 import { createFilesystemChangeEvent } from "@/lib/chat-stream-projection";
-import { createRejectedCommandResult } from "@/lib/agent/services/command-execution";
+import { createRejectedCommandResult } from "@/lib/command-execution/command-policy";
+import {
+  CommandExecutionStoreError,
+  enqueueApprovedCommandExecution,
+  prepareCommandApprovalPreview,
+} from "@/lib/command-execution/execution-service";
 
 type ApprovalRequestBody = {
   approvalId?: unknown;
@@ -185,7 +190,13 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
     return Response.json(action.result);
   }
 
-  if (action.status === "executing") {
+  if (
+    action.status === "executing" &&
+    !(
+      action.toolName === "execute_command" &&
+      normalized.value.decision === "approve"
+    )
+  ) {
     return errorResponse(
       "approval_execution_in_progress",
       "该确认请求正在执行，请勿重复提交。",
@@ -329,6 +340,46 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
     return Response.json(response);
   }
 
+  if (action.toolName === "execute_command") {
+    try {
+      await prepareCommandApprovalPreview(action.args, {
+        threadId: action.threadId,
+        threadScope,
+      });
+      const commandExecution = await enqueueApprovedCommandExecution(scope, {
+        actionId: action.actionId,
+        reason: normalized.value.reason,
+        threadId: action.threadId,
+      });
+      const response = createQueuedCommandApprovalResponse(
+        action,
+        commandExecution,
+      );
+      if (action.status !== "executing") {
+        await persistApprovalText({ action, response, scope });
+      }
+      requestLogger.info(
+        {
+          durationMs: Date.now() - requestStartedAt,
+          executionId: commandExecution.executionId,
+          status: commandExecution.status,
+          toolName: action.toolName,
+        },
+        "command approval enqueued",
+      );
+      return Response.json(response, { status: 202 });
+    } catch (error) {
+      if (error instanceof CommandExecutionStoreError) {
+        return errorResponse(error.code, error.message, error.status);
+      }
+      return errorResponse(
+        "command_enqueue_failed",
+        error instanceof Error ? error.message : "命令执行入队失败。",
+        500,
+      );
+    }
+  }
+
   const decidedAction = await decidePendingAction(scope, {
     actionId: action.actionId,
     approved: true,
@@ -419,6 +470,39 @@ export async function POST(request: Request, context: ApprovalRouteContext) {
   );
 
   return Response.json(response);
+}
+
+function createQueuedCommandApprovalResponse(
+  action: StoredPendingAction,
+  commandExecution: NonNullable<
+    ApprovalExecutionResponse["commandExecution"]
+  >,
+): ApprovalExecutionResponse {
+  const finalText = `命令已进入后台执行队列（第 ${commandExecution.attempt}/${commandExecution.maxAttempts} 次执行），可以刷新页面或切换线程，任务不会中断。`;
+  return {
+    approvalId: action.actionId,
+    approved: true,
+    commandExecution,
+    decision: "approve",
+    finalText,
+    isError: false,
+    ok: true,
+    status: "executing",
+    structuredResponse: createStructuredResponse({
+      finalText,
+      toolName: action.toolName,
+    }),
+    toolCallId: action.toolCallId,
+    toolName: action.toolName,
+    toolResult: {
+      content: JSON.stringify({
+        commandExecution,
+        ok: true,
+        summary: finalText,
+      }),
+      status: "success",
+    },
+  };
 }
 
 async function executeApprovedAction(

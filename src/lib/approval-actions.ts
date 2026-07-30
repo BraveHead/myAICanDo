@@ -2,7 +2,8 @@ import type { SupportedAgent } from "@/lib/agent/shared/agent-ids";
 import type {
   CommandApprovalPreview,
   CommandExecutionResult,
-} from "@/lib/agent/services/command-execution";
+  CommandExecutionSnapshot,
+} from "@/lib/command-execution/contracts";
 import type { FilesystemApprovalPreview } from "@/lib/agent/services/filesystem-service";
 import type { MemorySavePreview } from "@/lib/server/memory-store";
 import type { FilesystemChangeEvent } from "@/lib/chat-stream";
@@ -56,6 +57,7 @@ export type ApprovalExecutionResponse = {
   decision?: ApprovalDecision;
   followUpMessage?: string;
   finalText: string;
+  commandExecution?: CommandExecutionSnapshot;
   commandResult?: CommandExecutionResult;
   filesystemChange?: FilesystemChangeEvent;
   isError: boolean;

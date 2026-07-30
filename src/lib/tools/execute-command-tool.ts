@@ -3,9 +3,9 @@ import * as z from "zod";
 import {
   COMMAND_DEFAULT_TIMEOUT_MS,
   COMMAND_MAX_TIMEOUT_MS,
-  executeCommandInSandbox,
-  type CommandExecutionContext,
-} from "@/lib/agent/services/command-execution";
+} from "@/lib/command-execution/command-policy";
+import type { CommandExecutionContext } from "@/lib/command-execution/contracts";
+import { executeCommandInSandbox } from "@/lib/command-execution/execution-service";
 
 export function createExecuteCommandTool(context: CommandExecutionContext) {
   return tool(

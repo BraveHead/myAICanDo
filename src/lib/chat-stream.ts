@@ -1,5 +1,5 @@
 import type { TodoState } from "@/lib/agent/harness/planning/types";
-import type { CommandExecutionStatus } from "@/lib/agent/services/command-execution";
+import type { CommandExecutionStatus } from "@/lib/command-execution/contracts";
 
 export type SubagentId = "filesystem" | "memory" | "weather";
 export type ToolCallStatus =
@@ -341,7 +341,9 @@ function isCommandExecutionStatus(value: unknown): value is CommandExecutionStat
     value === "failed" ||
     value === "timed_out" ||
     value === "rejected" ||
-    value === "sandbox_unavailable"
+    value === "sandbox_unavailable" ||
+    value === "cancelled" ||
+    value === "expired"
   );
 }
 

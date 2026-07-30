@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M10 execute_command 时序图</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b1020;
+    --panel: #121a2d;
+    --panel-2: #18233a;
+    --line: #2b3a58;
+    --text: #e7ecf6;
+    --muted: #9eaac0;
+    --blue: #72a7ff;
+    --green: #6ed69a;
+    --amber: #f3bd6b;
+    --red: #ff8e9d;
+    --violet: #b79bff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(circle at top right, #142343 0, var(--bg) 38%);
+    color: var(--text);
+    font: 15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 1440px; margin: 0 auto; padding: 44px 24px 90px; }
+  h1 { margin: 0 0 10px; font-size: 30px; line-height: 1.25; }
+  h2 { margin: 40px 0 14px; font-size: 20px; }
+  p.lead { max-width: 940px; color: var(--muted); margin: 6px 0; }
+  code {
+    border-radius: 5px; background: #0a1224; color: #ffd28e;
+    padding: 2px 6px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12.5px;
+  }
+  .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 6px; }
+  .pill { border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+    color: var(--muted); padding: 4px 11px; font-size: 12px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin: 16px 0 6px; color: var(--muted); font-size: 13px; }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .swatch { width: 26px; height: 0; border-top-width: 3px; border-top-style: solid; display: inline-block; }
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px;
+    background: linear-gradient(145deg, var(--panel-2), var(--panel)); padding: 8px; margin-top: 12px; }
+  svg { display: block; }
+  .diagram text { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .msg { fill: var(--text); font-size: 12.5px; paint-order: stroke;
+    stroke: #0e1526; stroke-width: 5px; stroke-linejoin: round; }
+  .msg.hint { fill: var(--muted); font-size: 11.5px; }
+  .lifeline-title { fill: var(--text); font-size: 13px; font-weight: 700; }
+  .lifeline-sub { fill: var(--muted); font-size: 10.5px; }
+  .band-txt { fill: var(--text); font-size: 13px; font-weight: 700; }
+  .note-txt { fill: var(--amber); font-size: 11.5px; paint-order: stroke; stroke: #0e1526; stroke-width: 5px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; margin-top: 14px; }
+  .card { border: 1px solid var(--line); border-radius: 12px;
+    background: linear-gradient(145deg, var(--panel-2), var(--panel)); padding: 16px; }
+  .card h3 { margin: 0 0 6px; font-size: 15px; }
+  .card.blue { border-left: 3px solid var(--blue); }
+  .card.green { border-left: 3px solid var(--green); }
+  .card.amber { border-left: 3px solid var(--amber); }
+  .card.violet { border-left: 3px solid var(--violet); }
+  .card ul { margin: 6px 0 0 18px; padding: 0; color: var(--muted); font-size: 13.5px; }
+  .card li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>M10 · <code>execute_command</code> 端到端时序</h1>
+  <p class="lead">从用户点“批准”到命令终态回写对话流的完整链路。核心是把 <strong>HTTP 请求生命周期</strong>与<strong>任务生命周期</strong>彻底拆开：审批接口毫秒级返回 <code>202</code>，命令在独立 Bun Worker 进程 + PostgreSQL 中运行，浏览器刷新 / 切线程 / 断连都不影响任务。</p>
+  <div class="pill-row">
+    <span class="pill">PostgreSQL 全局 BIGSERIAL 事件 ID</span>
+    <span class="pill">heartbeat 5s / lease 15s</span>
+    <span class="pill">SSE Last-Event-ID 续传</span>
+    <span class="pill">stdout/stderr 8 KiB 背压分片</span>
+    <span class="pill">worker_lost 永不自动重跑</span>
+  </div>
+
+  <div class="legend">
+    <span><i class="swatch" style="border-top-color:var(--blue)"></i>请求 / 调用</span>
+    <span><i class="swatch" style="border-top-color:var(--green); border-top-style:dashed"></i>返回 / 事件下发</span>
+    <span><i class="swatch" style="border-top-color:var(--violet); border-top-style:dashed"></i>回写对话流（LLM 续接）</span>
+    <span><i class="swatch" style="border-top-color:var(--amber); border-top-style:dotted"></i>周期性动作 / 备注</span>
+  </div>
+
+  <div class="scroll">
+  <svg class="diagram" width="1380" height="1330" viewBox="0 0 1380 1330" role="img" aria-label="M10 execute_command 时序图">
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+        <path d="M0,0 L8,3 L0,6 Z" fill="#72a7ff" />
+      </marker>
+      <marker id="arrow-ret" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+        <path d="M0,0 L8,3 L0,6 Z" fill="#6ed69a" />
+      </marker>
+      <marker id="arrow-vio" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+        <path d="M0,0 L8,3 L0,6 Z" fill="#b79bff" />
+      </marker>
+    </defs>
+
+    <!-- ===== Lifelines ===== -->
+    <!-- x: B=110 A=330 P=570 W=810 S=1030 E=1250 -->
+    <g>
+      <!-- vertical lines -->
+      <line x1="110" y1="112" x2="110" y2="1276" stroke="#2b3a58" stroke-dasharray="3 5"/>
+      <line x1="330" y1="112" x2="330" y2="1276" stroke="#2b3a58" stroke-dasharray="3 5"/>
+      <line x1="570" y1="112" x2="570" y2="1276" stroke="#2b3a58" stroke-dasharray="3 5"/>
+      <line x1="810" y1="112" x2="810" y2="1276" stroke="#2b3a58" stroke-dasharray="3 5"/>
+      <line x1="1030" y1="112" x2="1030" y2="1276" stroke="#2b3a58" stroke-dasharray="3 5"/>
+      <line x1="1250" y1="112" x2="1250" y2="1276" stroke="#2b3a58" stroke-dasharray="3 5"/>
+
+      <!-- activation bars -->
+      <rect x="804" y="470" width="12" height="700" rx="3" fill="#72a7ff" opacity="0.14"/>
+      <rect x="1024" y="760" width="12" height="330" rx="3" fill="#6ed69a" opacity="0.16"/>
+      <rect x="1244" y="590" width="12" height="660" rx="3" fill="#f3bd6b" opacity="0.12"/>
+
+      <!-- header boxes -->
+      <g>
+        <rect x="30" y="60" width="160" height="46" rx="9" fill="#18233a" stroke="#2b3a58"/>
+        <text class="lifeline-title" x="110" y="82" text-anchor="middle">浏览器 / Provider</text>
+        <text class="lifeline-sub" x="110" y="98" text-anchor="middle">chat-workspace · SSE 客户端</text>
+
+        <rect x="252" y="60" width="156" height="46" rx="9" fill="#18233a" stroke="#2b3a58"/>
+        <text class="lifeline-title" x="330" y="82" text-anchor="middle">Approvals API</text>
+        <text class="lifeline-sub" x="330" y="98" text-anchor="middle">/chat/approvals · Next.js</text>
+
+        <rect x="494" y="60" width="152" height="46" rx="9" fill="#18233a" stroke="#2b3a58"/>
+        <text class="lifeline-title" x="570" y="82" text-anchor="middle">PostgreSQL</text>
+        <text class="lifeline-sub" x="570" y="98" text-anchor="middle">executions · events · pending</text>
+
+        <rect x="734" y="60" width="152" height="46" rx="9" fill="#18233a" stroke="#2b3a58"/>
+        <text class="lifeline-title" x="810" y="82" text-anchor="middle">Worker (Bun)</text>
+        <text class="lifeline-sub" x="810" y="98" text-anchor="middle">lane × N · 控制轮询</text>
+
+        <rect x="954" y="60" width="152" height="46" rx="9" fill="#18233a" stroke="#2b3a58"/>
+        <text class="lifeline-title" x="1030" y="82" text-anchor="middle">Sandbox</text>
+        <text class="lifeline-sub" x="1030" y="98" text-anchor="middle">子进程 · 禁网只读</text>
+
+        <rect x="1174" y="60" width="156" height="46" rx="9" fill="#18233a" stroke="#2b3a58"/>
+        <text class="lifeline-title" x="1252" y="82" text-anchor="middle">SSE Events API</text>
+        <text class="lifeline-sub" x="1252" y="98" text-anchor="middle">/executions/:id/events</text>
+      </g>
+
+      <!-- ============ Phase 1 ============ -->
+      <rect x="40" y="126" width="1300" height="26" rx="6" fill="#0f1830" stroke="#2b3a58"/>
+      <rect x="40" y="126" width="4" height="26" fill="#72a7ff"/>
+      <text class="band-txt" x="54" y="144">① 审批入队 · HTTP 请求内（毫秒级）</text>
+
+      <!-- m1 B->A -->
+      <line x1="110" y1="178" x2="326" y2="178" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="218" y="171" text-anchor="middle">POST /chat/approvals { decision: approve }</text>
+
+      <!-- m2 self A -->
+      <path d="M330 200 h46 v20 h-46" fill="none" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="386" y="215" text-anchor="start">重新校验 args / cwd / symlink / scope（M9 同策略）</text>
+
+      <!-- m3 A->P -->
+      <line x1="330" y1="248" x2="566" y2="248" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="448" y="241" text-anchor="middle">assertHealthyWorker：15s 内存在心跳？</text>
+
+      <!-- m4 A->P -->
+      <line x1="330" y1="288" x2="566" y2="288" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="448" y="281" text-anchor="middle">BEGIN｜approval→executing ＋ 插 queued execution ＋ 首个 command_state</text>
+
+      <!-- m5 A->B return -->
+      <line x1="330" y1="326" x2="114" y2="326" stroke="#6ed69a" stroke-width="1.6" stroke-dasharray="7 5" marker-end="url(#arrow-ret)"/>
+      <text class="msg" x="222" y="319" text-anchor="middle">202 { commandExecution: queued }</text>
+      <text class="note-txt" x="222" y="346" text-anchor="middle">▲ HTTP 请求到此结束 —— 之后刷新 / 切线程 / 断连均不影响任务</text>
+
+      <!-- ============ Phase 2 ============ -->
+      <rect x="40" y="360" width="1300" height="26" rx="6" fill="#0f1830" stroke="#2b3a58"/>
+      <rect x="40" y="360" width="4" height="26" fill="#6ed69a"/>
+      <text class="band-txt" x="54" y="378">② Worker 领取 · 独立 Bun 进程</text>
+
+      <!-- m6 W->P -->
+      <line x1="810" y1="410" x2="574" y2="410" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="692" y="403" text-anchor="middle">claimNextCommandExecution（FOR UPDATE SKIP LOCKED）</text>
+
+      <!-- m7 P->W return -->
+      <line x1="570" y1="448" x2="806" y2="448" stroke="#6ed69a" stroke-width="1.6" stroke-dasharray="7 5" marker-end="url(#arrow-ret)"/>
+      <text class="msg" x="688" y="441" text-anchor="middle">最早 queued 任务｜写 workerId / running / 15s lease ＋ command_state</text>
+
+      <!-- ============ Phase 3 ============ -->
+      <rect x="40" y="482" width="1300" height="26" rx="6" fill="#0f1830" stroke="#2b3a58"/>
+      <rect x="40" y="482" width="4" height="26" fill="#f3bd6b"/>
+      <text class="band-txt" x="54" y="500">③ 前端订阅 · 与执行并行</text>
+
+      <!-- m8 B->E -->
+      <line x1="110" y1="552" x2="1246" y2="552" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="620" y="545" text-anchor="middle">GET /executions 拉快照（含 lastEventId）→ GET /executions/:id/events（Last-Event-ID）</text>
+
+      <!-- m9 E->P -->
+      <line x1="1250" y1="592" x2="574" y2="592" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="912" y="585" text-anchor="middle">listCommandExecutionEvents(afterEventId = cursor)</text>
+
+      <!-- m10 E->B return -->
+      <line x1="1250" y1="632" x2="114" y2="632" stroke="#6ed69a" stroke-width="1.6" stroke-dasharray="7 5" marker-end="url(#arrow-ret)"/>
+      <text class="msg" x="640" y="625" text-anchor="middle">SSE：id / command_state / command_output（服务端只发 id &gt; cursor）</text>
+
+      <!-- ============ Phase 4 ============ -->
+      <rect x="40" y="666" width="1300" height="26" rx="6" fill="#0f1830" stroke="#2b3a58"/>
+      <rect x="40" y="666" width="4" height="26" fill="#6ed69a"/>
+      <text class="band-txt" x="54" y="684">④ 沙箱执行 ＋ 流式背压（循环）</text>
+
+      <!-- m11 W->S -->
+      <line x1="810" y1="734" x2="1026" y2="734" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="918" y="727" text-anchor="middle">execute(request, { onOutput, signal })</text>
+
+      <!-- m12 self S -->
+      <path d="M1030 756 h44 v20 h-44" fill="none" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="1084" y="771" text-anchor="start">spawn 子进程（禁网 · 只读 · 独立进程组）</text>
+
+      <!-- m13 S->W -->
+      <line x1="1030" y1="804" x2="814" y2="804" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="922" y="797" text-anchor="middle">stdout.on('data') → stream.pause() → onOutput(chunk ≤ 8KiB)</text>
+
+      <!-- m14 W->P -->
+      <line x1="810" y1="844" x2="574" y2="844" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="692" y="837" text-anchor="middle">appendCommandOutput：插 command_output（BIGSERIAL 全局 id）</text>
+
+      <!-- m15 self S -->
+      <path d="M1030 866 h44 v20 h-44" fill="none" stroke="#6ed69a" stroke-width="1.6" stroke-dasharray="7 5" marker-end="url(#arrow-ret)"/>
+      <text class="msg" x="1084" y="881" text-anchor="start">DB 写完 → stream.resume()（真实背压）</text>
+
+      <!-- m16 E->B -->
+      <line x1="1250" y1="912" x2="114" y2="912" stroke="#6ed69a" stroke-width="1.6" stroke-dasharray="7 5" marker-end="url(#arrow-ret)"/>
+      <text class="msg" x="640" y="905" text-anchor="middle">增量 output 事件 → 客户端按 id 去重、追加到对应 stdout / stderr</text>
+
+      <!-- note periodic -->
+      <text class="note-txt" x="810" y="948" text-anchor="middle">⟳ 运行期间：Worker 每 5s renewLease；每 500ms 轮询 cancel_requested / worker_shutdown</text>
+
+      <!-- ============ Phase 5 ============ -->
+      <rect x="40" y="968" width="1300" height="26" rx="6" fill="#0f1830" stroke="#2b3a58"/>
+      <rect x="40" y="968" width="4" height="26" fill="#b79bff"/>
+      <text class="band-txt" x="54" y="986">⑤ 终态 ＋ 回写对话流</text>
+
+      <!-- m17 S->W -->
+      <line x1="1030" y1="1038" x2="814" y2="1038" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="922" y="1031" text-anchor="middle">completed / timed_out(kill 进程组) / cancelled / worker_lost → result</text>
+
+      <!-- m18 W->P -->
+      <line x1="810" y1="1078" x2="574" y2="1078" stroke="#72a7ff" stroke-width="1.6" marker-end="url(#arrow)"/>
+      <text class="msg" x="692" y="1071" text-anchor="middle">finalizeCommandExecution 事务：写 result ＋ command_result ＋ 更新 pending_action</text>
+
+      <!-- m19 P->B violet (LLM resume) -->
+      <line x1="570" y1="1118" x2="114" y2="1118" stroke="#b79bff" stroke-width="1.8" stroke-dasharray="2 5" marker-end="url(#arrow-vio)"/>
+      <text class="msg" x="342" y="1111" text-anchor="middle">pending_action(executed/failed) 携带 tool result → LLM 续接对话</text>
+
+      <!-- m20 E->B -->
+      <line x1="1250" y1="1160" x2="114" y2="1160" stroke="#6ed69a" stroke-width="1.6" stroke-dasharray="7 5" marker-end="url(#arrow-ret)"/>
+      <text class="msg" x="640" y="1153" text-anchor="middle">command_result 事件 → 卡片终态；cursor 追平 lastEventId → 关闭 SSE</text>
+
+      <!-- maintenance note -->
+      <text class="note-txt" x="690" y="1214" text-anchor="middle">维护任务：lease 失效 → failLostCommandExecutions 标 failed(worker_lost)，绝不自动重跑；重试永远是新 execution（≤3 次）</text>
+      <text class="note-txt" x="690" y="1236" text-anchor="middle">清理：7 天前事件 · 30 天前终态 execution · 陈旧 heartbeat</text>
+    </g>
+  </svg>
+  </div>
+
+  <h2>关键机制拆解</h2>
+  <div class="grid">
+    <div class="card blue">
+      <h3>两条生命周期解耦</h3>
+      <ul>
+        <li>审批接口在事务提交后立即返回 <code>202</code>，HTTP 请求结束。</li>
+        <li>命令在 <code>bun src/workers/command-execution-worker.ts</code> 独立进程执行。</li>
+        <li>刷新 / 切线程 / 浏览器断开只释放 SSE 订阅，不触碰任务。</li>
+      </ul>
+    </div>
+    <div class="card green">
+      <h3>实时输出 + 真实背压</h3>
+      <ul>
+        <li>子进程输出先 <code>pause()</code>，等事件写库完成再 <code>resume()</code>。</li>
+        <li>UTF-8 安全分片 ≤ 8 KiB，逐条落 <code>command_output</code> 事件。</li>
+        <li>没有任何浏览器连着，输出也已持久化，不会丢。</li>
+      </ul>
+    </div>
+    <div class="card amber">
+      <h3>Last-Event-ID 续传 · 去重</h3>
+      <ul>
+        <li>事件表 <code>id BIGSERIAL</code> 全局单调递增。</li>
+        <li>服务端只发 <code>id &gt; cursor</code>；客户端 <code>reduce</code> 再挡 <code>id ≤ lastEventId</code>。</li>
+        <li>快照 + SSE 重叠部分被双层去重吃掉，刷新不重复不缺片段。</li>
+      </ul>
+    </div>
+    <div class="card violet">
+      <h3>终态回写对话流</h3>
+      <ul>
+        <li>任一终态都在同事务更新 <code>pending_action</code> 的 result。</li>
+        <li>对话从持久化的 pending action 恢复，而非依赖 HTTP 请求。</li>
+        <li><code>worker_lost</code> 永不自动重跑；重试是新授权、新 execution。</li>
+      </ul>
+    </div>
+  </div>
+</main>
+</body>
+</html>

@@ -3,11 +3,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const {
-  executeCommandInSandbox,
-  prepareCommandApprovalPreview,
-  validateExecuteCommandArgs,
-} = await import("../src/lib/agent/services/command-execution.ts");
+const { validateExecuteCommandArgs } = await import(
+  "../src/lib/command-execution/command-policy.ts"
+);
+const { executeCommandInSandbox, prepareCommandApprovalPreview } = await import(
+  "../src/lib/command-execution/execution-service.ts"
+);
 
 let root;
 let previousRoot;

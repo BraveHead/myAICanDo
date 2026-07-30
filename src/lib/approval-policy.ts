@@ -16,11 +16,13 @@ import {
   type SaveUserMemoryResult,
 } from "@/lib/agent/services/memory-service";
 import {
+  validateExecuteCommandArgs as validateExecuteCommandArgsFromPolicy,
+} from "@/lib/command-execution/command-policy";
+import {
   executeCommandInSandbox,
   prepareCommandApprovalPreview,
-  validateExecuteCommandArgs as validateExecuteCommandArgsFromService,
-  type CommandExecutionToolResult,
-} from "@/lib/agent/services/command-execution";
+} from "@/lib/command-execution/execution-service";
+import type { CommandExecutionToolResult } from "@/lib/command-execution/contracts";
 import {
   type ApprovalGatedToolName,
   type ApprovalOption,
@@ -501,7 +503,7 @@ function validateCommandArgs(args: unknown): ApprovalValidationResult {
   // The command service owns the allowlist and path checks so the agent,
   // approval API, and edited-argument flow all share the same validation.
   // Keep the adapter here to preserve the approval registry's common shape.
-  const result = validateExecuteCommandArgsFromService(args);
+  const result = validateExecuteCommandArgsFromPolicy(args);
   return result.ok
     ? { ok: true, value: result.value }
     : { message: result.message, ok: false };

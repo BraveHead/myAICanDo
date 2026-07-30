@@ -49,4 +49,28 @@ describe("M9 command result events", () => {
       ),
     ).toBe(false);
   });
+
+  test("keeps M10 cancelled and expired terminal results compatible", () => {
+    for (const status of ["cancelled", "expired"]) {
+      expect(
+        isChatStreamEvent(
+          {
+            args: [],
+            command: "pwd",
+            cwd: "workspace",
+            durationMs: 1,
+            executionId: `exec_${status}`,
+            finishedAt: "2026-07-23T00:00:00.000Z",
+            outputTruncated: false,
+            status,
+            stderr: "",
+            stdout: "",
+            summary: status,
+            type: "command_result",
+          },
+          "command_result",
+        ),
+      ).toBe(true);
+    }
+  });
 });
