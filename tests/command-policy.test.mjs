@@ -42,8 +42,16 @@ afterEach(async () => {
 
 describe("M9 execute_command policy", () => {
   test("allows safe commands and rejects shell/network/path escape inputs", () => {
-    expect(validateExecuteCommandArgs({ command: "pwd" })).toMatchObject({
+    expect(
+      validateExecuteCommandArgs({ command: "pwd", cwd: "workspace" }),
+    ).toEqual({
       ok: true,
+      value: {
+        args: [],
+        command: "pwd",
+        cwd: "workspace",
+        timeoutMs: 30_000,
+      },
     });
     expect(
       validateExecuteCommandArgs({ command: "bun", args: ["run", "typecheck"] }),

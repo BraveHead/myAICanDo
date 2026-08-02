@@ -425,10 +425,10 @@
       </div>
       <div class="meta">
         <span class="pill">生成日期：2026-07-14</span>
-        <span class="pill">最近更新：2026-07-15</span>
+        <span class="pill">最近更新：2026-07-31</span>
         <span class="pill">项目：myAICanDo</span>
         <span class="pill">技术基线：LangChain createAgent + LangGraph checkpointer</span>
-        <span class="pill">推荐首个功能：filesystem v1.1</span>
+        <span class="pill">当前迭代：M11 标准 MCP 接入</span>
       </div>
     </header>
 
@@ -874,7 +874,7 @@
         <article class="milestone">
           <div class="tag">M10</div>
           <div>
-            <h3>Persistent Execute：PostgreSQL 持久任务、独立 Worker 与可重连 SSE（当前迭代）</h3>
+            <h3>Persistent Execute：PostgreSQL 持久任务、独立 Worker 与可重连 SSE（已完成）</h3>
             <p class="why">M9 v1 只在审批后同步返回最终结果；长时间命令、取消、重试、后台任务和实时 stdout/stderr 需要独立的持久化执行模型。</p>
             <div class="steps">
               <div class="step-box">
@@ -902,26 +902,59 @@
             </div>
           </div>
         </article>
+
+        <article class="milestone">
+          <div class="tag">M11</div>
+          <div>
+            <h3>标准 MCP 接入：只读 Bun stdio Server（当前迭代）</h3>
+            <p class="why">现有 LangChain Tool 只能由项目内 Agent 装配，外部 AI 客户端缺少统一的能力发现、Schema 协商和安全调用入口；M11 在不改变内部 Agent 链路的前提下增加标准协议适配层。</p>
+            <div class="steps">
+              <div class="step-box">
+                <strong>协议与进程</strong>
+                使用 MCP TypeScript SDK v2 创建独立 Bun stdio Server；Host 直接启动 Bun，stdout 只传 JSON-RPC，配置错误、审计和诊断日志只写 stderr。
+              </div>
+              <div class="step-box">
+                <strong>作用域与复用</strong>
+                tenant/user 由进程环境固定，workspace/thread 每次调用重新校验；MCP Handler 只做协议适配，继续复用现有 command-execution 和 filesystem 领域服务。
+              </div>
+              <div class="step-box">
+                <strong>四个只读工具</strong>
+                提供 <code>list_command_executions</code>、<code>get_command_execution</code>、<code>list_workspace_files</code> 和 <code>read_workspace_file</code>，统一返回结构化结果与稳定错误。
+              </div>
+            </div>
+            <div class="note">
+              <strong>M11 安全边界：</strong>
+              首版仅支持受信任本机 stdio，不监听网络端口；模型不能传入或覆盖 tenant/user。
+              四个工具全部标记为 read-only，不开放命令入队、取消、重试、文件写入、Skill 脚本执行或 Agent checkpoint 恢复。
+            </div>
+            <div class="note">
+              <strong>M11 启动关系：</strong>
+              PostgreSQL 是唯一必需的外部依赖；MCP Host 按需拉起 Server，不依赖 <code>yarn dev</code> 或 <code>yarn worker:commands</code> 的启动顺序。
+              未来 Streamable HTTP 必须增加 Bearer/OAuth、限流、会话和审计，不能复用本机环境变量身份模型。
+            </div>
+          </div>
+        </article>
       </div>
     </section>
 
     <section id="first">
       <h2 class="section"><span class="num">§5</span>第一步建议</h2>
       <div class="callout warn">
-        <strong>当前迭代为 M10：Persistent Execute。</strong>
-        M9 已完成受限命令、审批闭环与安全 Sandbox；当前在不扩大命令能力的前提下，把同步执行升级为 PostgreSQL 持久任务、独立 Bun Worker、可重连 SSE 和线程范围工具卡恢复。
+        <strong>当前迭代为 M11：标准 MCP 接入。</strong>
+        M10 已完成 PostgreSQL 持久任务、独立 Bun Worker 和可重连 SSE；当前在不改变内部 Agent Tool 链路、不扩大命令和文件权限的前提下，为外部 MCP Client 增加四个标准只读入口。
       </div>
 
-      <h3>M10 的拆分顺序</h3>
+      <h3>M11 的拆分顺序</h3>
       <ol>
-        <li>建立 execution、event 和 worker heartbeat 三张持久表，先固定状态机、attempt、lease、保留期与 scope 索引。</li>
-        <li>扩展 <code>SandboxExecutor.execute()</code>，支持固定 executionId、AbortSignal、异步输出回调、进程组终止和 Docker 容器清理。</li>
-        <li>增加独立 Bun Worker，以 <code>SKIP LOCKED</code> 并发领取、续租、取消检查和 SIGTERM 收尾；Worker 不健康时拒绝入队。</li>
-        <li>接入审批原子入队，以及 list/events/cancel/retry Route Handler；SSE 使用持久事件 ID 补发并在终态关闭。</li>
-        <li>增加 thread-scoped execution provider，把实时状态挂回原工具卡；刷新和切换线程只重建订阅，不影响后台任务。</li>
+        <li>建立运行时无关的 MCP 配置，并把 PostgreSQL Access Repository 与授权 Policy 分开；固定 tenant/user 进程身份，并逐次校验成员关系、workspace 和 thread 绑定。</li>
+        <li>创建领域无关的 Server factory、Tool Definition 和统一执行管线，集中处理 thread scope 授权、requestId、结果与稳定错误结构。</li>
+        <li>把四个工具按 command-execution/filesystem 拆成独立工具包，各自拥有严格 Schema、最小领域 Port、结果投影和错误转换。</li>
+        <li>通过默认 Server 组装层和编译期静态注册表组合工具，保留显式 allowlist，并验证新增第五工具无需修改 Factory。</li>
+        <li>增加独立 Bun stdio 入口和关闭逻辑，确保 stdout 仅承载协议，stderr 日志脱敏且包含 requestId。</li>
+        <li>补齐 Core、Repository、scope、领域工具和协议集成测试，并使用 MCP Inspector 验证发现、调用、跨 scope 拒绝和进程关闭。</li>
       </ol>
 
-      <h3>M10 关键改动文件</h3>
+      <h3>M11 关键改动文件</h3>
       <table>
         <thead>
           <tr>
@@ -931,28 +964,32 @@
         </thead>
         <tbody>
           <tr>
-            <td><code>src/lib/command-execution/contracts.ts</code><br><code>src/lib/command-execution/command-policy.ts</code></td>
-            <td>定义持久任务/事件协议，并集中维护命令 allowlist、参数、路径、超时与审批预览策略。</td>
+            <td><code>src/lib/mcp/config.ts</code><br><code>src/lib/mcp/access/</code></td>
+            <td>分离 Server metadata、固定身份和 stdio 配置；Repository 负责 PostgreSQL 行映射，Policy 逐次验证 tenant/user/workspace/thread scope。</td>
           </tr>
           <tr>
-            <td><code>src/lib/command-execution/execution-service.ts</code><br><code>src/lib/command-execution/execution-repository.ts</code></td>
-            <td>由领域服务编排入队、查询、取消和重试，Repository 统一封装 execution、event、heartbeat 表及 SKIP LOCKED、lease 和清理。</td>
+            <td><code>src/lib/mcp/core/</code><br><code>src/lib/mcp/contracts/</code></td>
+            <td>定义 Tool Definition、统一授权与执行管线、公共 scope/error Schema，以及 content、structuredContent、isError 和 requestId 封装。</td>
           </tr>
           <tr>
-            <td><code>src/lib/command-execution/sandbox-executor.ts</code><br><code>src/workers/command-execution-worker.ts</code></td>
-            <td>SandboxExecutor 提供固定 ID、AbortSignal、输出背压和进程清理；独立 Worker 只负责领取、执行、续租、取消和 SIGTERM 调度。</td>
+            <td><code>src/lib/mcp/tools/</code><br><code>src/lib/mcp/tool-registry.ts</code></td>
+            <td>按 command-execution/filesystem 拆分 Schema、最小 Port 和工具定义，通过静态注册表组成明确的工具 allowlist。</td>
           </tr>
           <tr>
-            <td><code>src/app/api/tenants/[tenantId]/chat/approvals/route.ts</code><br><code>src/app/api/tenants/[tenantId]/chat/executions/**</code></td>
-            <td>命令审批改为 HTTP 202 持久入队；提供线程范围 list、可重连 events SSE、幂等 cancel 和手动 retry。</td>
+            <td><code>src/lib/mcp/server-factory.ts</code><br><code>src/lib/mcp/default-server.ts</code></td>
+            <td>Factory 只负责协议对象和工具注册；默认组装层组合 Access Policy、领域 Port、日志和当前四个工具。</td>
           </tr>
           <tr>
-            <td><code>src/components/assistant/command-execution-provider.tsx</code><br><code>src/components/assistant/chat-workspace.tsx</code></td>
-            <td>按 thread 恢复 PostgreSQL 快照并续订持久事件，按 toolCallId 把状态、实时输出、取消和重试挂回原命令工具卡。</td>
+            <td><code>src/mcp/stdio-server.ts</code><br><code>package.json</code></td>
+            <td>通过 Bun 启动独立 stdio Server，绑定 SIGINT/SIGTERM/stdin 关闭并清理连接；增加开发诊断脚本和 MCP SDK 依赖。</td>
           </tr>
           <tr>
-            <td><code>tests/persistent-command-execution.test.mjs</code><br><code>tests/command-result-event.test.mjs</code></td>
-            <td>状态机、终态兼容、持久事件去重、UTF-8 8 KiB 分片、固定 executionId，以及 heartbeat/SKIP LOCKED/worker_lost 契约回归。</td>
+            <td><code>tests/mcp-*.test.mjs</code></td>
+            <td>覆盖配置、scope 隔离、四工具契约、稳定错误、领域边界，以及官方 Client 的工具发现与调用。</td>
+          </tr>
+          <tr>
+            <td><code>docs/m11-mcp-integration-data-flow.html</code></td>
+            <td>说明必要性、架构分层、七阶段数据流、四工具协议、安全边界、本地 Host 配置、启动关系和未来 HTTP 演进。</td>
           </tr>
         </tbody>
       </table>
@@ -969,6 +1006,7 @@
             <li>coordinator 能启动隔离子 agent，并只接收最终摘要。</li>
             <li>大文件和大结果不会直接塞满主上下文。</li>
             <li>敏感操作必须暂停等待用户确认。</li>
+            <li>外部 MCP Client 能发现四个只读工具，并读取授权 scope 内的 execution 和线程文件。</li>
           </ul>
         </div>
         <div class="card">
@@ -979,6 +1017,7 @@
             <li>新增 service/tool 的路径逃逸、权限、空输入、超限输入都有测试。</li>
             <li>Postgres checkpointer 和 thread-store 的隔离 key 都包含 workspace 维度，并兼容旧 key。</li>
             <li>现有 demo/weather/literary/memory/filesystem/coordinator 行为不回退。</li>
+            <li>MCP 跨 scope 请求被拒绝，stdio stdout 不包含日志或包管理器启动信息。</li>
           </ul>
         </div>
       </div>

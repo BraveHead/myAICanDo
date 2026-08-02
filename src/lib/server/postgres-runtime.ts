@@ -18,3 +18,9 @@ export function getPostgresPool() {
   }
   return pool;
 }
+
+export async function closePostgresPool() {
+  const currentPool = pool;
+  pool = null;
+  await currentPool?.end();
+}

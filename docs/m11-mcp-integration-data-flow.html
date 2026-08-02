@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>M11 标准 MCP 接入与只读 Server 数据流</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121a2d;
+      --panel-2: #18233a;
+      --line: #2b3a58;
+      --text: #e7ecf6;
+      --muted: #9eaac0;
+      --blue: #72a7ff;
+      --green: #6ed69a;
+      --amber: #f3bd6b;
+      --red: #ff8e9d;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top right, #142343 0, var(--bg) 38%);
+      color: var(--text);
+      font: 15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 48px 28px 96px; }
+    h1 { margin: 0 0 10px; font-size: 32px; line-height: 1.25; }
+    h2 { margin: 42px 0 16px; font-size: 21px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    p { margin: 8px 0; }
+    a { color: var(--blue); }
+    code {
+      border-radius: 5px;
+      background: #0a1224;
+      color: #ffd28e;
+      padding: 2px 6px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      word-break: break-word;
+    }
+    pre {
+      margin: 12px 0 0;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #08101f;
+      padding: 14px;
+      color: #d8e4f8;
+      font: 12.5px/1.65 "SFMono-Regular", Consolas, monospace;
+    }
+    pre code { padding: 0; background: transparent; color: inherit; }
+    .lead { max-width: 940px; color: var(--muted); }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--muted);
+      padding: 4px 11px;
+      font-size: 12px;
+    }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card, .layer, .stage {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(145deg, var(--panel-2), var(--panel));
+      padding: 16px;
+    }
+    .card ul, .layer ul { margin: 8px 0 0 18px; padding: 0; color: var(--muted); }
+    .problem { border-left: 3px solid var(--amber); }
+    .problem strong { color: var(--amber); }
+    .solution { border-left: 3px solid var(--green); }
+    .solution strong { color: var(--green); }
+    .architecture { display: grid; gap: 10px; }
+    .layer {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .layer-name {
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .04em;
+    }
+    .layer p { margin: 0; color: var(--muted); }
+    .down { color: var(--blue); text-align: center; font-size: 20px; line-height: 1; }
+    .boundary {
+      border: 1px dashed var(--amber);
+      border-radius: 12px;
+      background: rgba(243, 189, 107, .06);
+      padding: 14px 16px;
+      color: var(--muted);
+    }
+    .boundary strong { color: var(--amber); }
+    .stage-list { display: grid; gap: 12px; }
+    .stage {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      gap: 18px;
+    }
+    .stage-id { color: var(--blue); font-weight: 700; }
+    .stage-id small { display: block; color: var(--muted); font-weight: 400; }
+    .steps { display: grid; gap: 10px; }
+    .step {
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+    .step b {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      place-items: center;
+      border-radius: 50%;
+      background: #20345a;
+      color: var(--text);
+    }
+    .step p { margin: 0; color: var(--muted); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--panel-2); color: var(--blue); }
+    td { color: var(--muted); }
+    .impact-flow {
+      display: grid;
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+    .impact-row {
+      display: grid;
+      grid-template-columns: 1fr 50px 1fr 1.35fr;
+      gap: 12px;
+      align-items: center;
+      background: var(--panel);
+      padding: 12px;
+    }
+    .impact-row.header {
+      background: var(--panel-2);
+      color: var(--blue);
+      font-weight: 700;
+    }
+    .impact-arrow { color: var(--blue); text-align: center; font-size: 18px; }
+    .good { color: var(--green); }
+    .warn { color: var(--amber); }
+    .bad { color: var(--red); }
+    .relationship {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .relation-item {
+      position: relative;
+      min-height: 150px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      padding: 15px;
+    }
+    .relation-item .label {
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .06em;
+    }
+    .relation-item p { color: var(--muted); }
+    .relation-item:not(:last-child)::after {
+      content: "↔";
+      position: absolute;
+      top: 44%;
+      right: -21px;
+      z-index: 2;
+      color: var(--blue);
+      font-size: 20px;
+    }
+    @media (max-width: 900px) {
+      .grid, .relationship { grid-template-columns: 1fr; }
+      .layer, .stage { grid-template-columns: 1fr; gap: 8px; }
+      .impact-row { grid-template-columns: 1fr; }
+      .impact-row.header { display: none; }
+      .impact-arrow { transform: rotate(90deg); }
+      .relation-item:not(:last-child)::after {
+        content: "↕";
+        top: auto;
+        right: 50%;
+        bottom: -22px;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>M11 标准 MCP 接入与只读 Server 数据流</h1>
+    <p class="lead">
+      M11 在现有领域服务之外增加一个标准协议适配层，让 Codex、Claude Desktop、Cursor 或其他 MCP Host
+      在不理解项目内部 LangChain Tool 实现的情况下，安全读取当前用户有权访问的命令执行记录和线程文件。
+      首版使用独立 Bun stdio 进程，只面向受信任的本机客户端，不改变现有 Agent、Skill、审批与 Worker 链路。
+    </p>
+    <div class="pill-row">
+      <span class="pill">MCP TypeScript SDK v2</span>
+      <span class="pill">Bun stdio Server</span>
+      <span class="pill">4 个只读工具</span>
+      <span class="pill">tenant / user 固定身份</span>
+      <span class="pill">workspace / thread 每次校验</span>
+      <span class="pill">无数据库迁移</span>
+    </div>
+  </header>
+
+  <h2>为什么 M11 是必要的</h2>
+  <section class="grid">
+    <article class="card problem">
+      <h3><strong>问题 1：</strong>内部 Tool 不是跨进程协议</h3>
+      <p>
+        当前 LangChain Tool 只能由项目内 Agent 直接装配。外部 AI 客户端若要读取相同数据，
+        必须了解项目模块、运行上下文和调用参数，无法通过统一发现机制接入。
+      </p>
+    </article>
+    <article class="card solution">
+      <h3><strong>解决 1：</strong>通过 MCP 暴露稳定能力契约</h3>
+      <p>
+        MCP Client 可通过 <code>tools/list</code> 自动发现名称、说明、Schema 和只读属性，
+        再使用同一 JSON-RPC 约定调用，不需要依赖 LangChain 或项目页面 API。
+      </p>
+    </article>
+    <article class="card problem">
+      <h3><strong>问题 2：</strong>重复实现容易绕过安全边界</h3>
+      <p>
+        如果每个客户端各自查询 PostgreSQL 或遍历沙盒目录，容易遗漏 tenant、user、workspace、thread
+        隔离，以及相对路径、symlink、二进制和文件大小限制。
+      </p>
+    </article>
+    <article class="card solution">
+      <h3><strong>解决 2：</strong>协议适配复用既有领域服务</h3>
+      <p>
+        MCP Handler 只负责参数校验、scope 鉴权与结果转换；执行查询和文件读取仍复用
+        <code>command-execution</code> 与 <code>filesystem-service</code>，安全规则只有一个事实来源。
+      </p>
+    </article>
+    <article class="card problem">
+      <h3><strong>问题 3：</strong>Skill、Agent Tool 与外部能力边界混淆</h3>
+      <p>
+        Skill 可以携带说明和脚本，但它描述的是“如何完成任务”；内部 Tool 解决进程内调用，
+        二者都不天然提供跨客户端的发现、Schema 协商和传输协议。
+      </p>
+    </article>
+    <article class="card solution">
+      <h3><strong>解决 3：</strong>明确三层职责而不互相替换</h3>
+      <p>
+        Skill 继续定义工作流，内部 Agent 继续直连 Tool，MCP 只作为外部客户端适配层。
+        首版不增加 Agent → MCP → 本项目的自调用和额外故障点。
+      </p>
+    </article>
+  </section>
+
+  <h2>架构分层</h2>
+  <section class="architecture">
+    <article class="layer">
+      <div class="layer-name">MCP Host / Client</div>
+      <p>
+        负责按配置启动子进程、完成 <code>initialize</code>、发现工具并发起调用；
+        例如 Codex、Claude Desktop、Cursor 或 MCP Inspector。
+      </p>
+    </article>
+    <div class="down">↓ stdio / JSON-RPC</div>
+    <article class="layer">
+      <div class="layer-name">进程入口</div>
+      <p>
+        <code>src/mcp/stdio-server.ts</code> 读取固定身份与数据库配置，创建 Server，
+        绑定信号和 stdin 关闭事件；stdout 只输出协议，诊断日志只进入 stderr。
+      </p>
+    </article>
+    <div class="down">↓</div>
+    <article class="layer">
+      <div class="layer-name">默认 Server 组装层</div>
+      <p>
+        <code>default-server.ts</code> 使用编译期静态注册表组合 Access Policy、
+        command-execution 和 filesystem 工具包；新增领域工具不需要修改 Server factory。
+      </p>
+    </article>
+    <div class="down">↓ 静态工具定义</div>
+    <article class="layer">
+      <div class="layer-name">MCP Core</div>
+      <p>
+        <code>server-factory.ts</code> 只创建 Server、校验工具名称并注册定义；统一执行管线负责
+        requestId、thread scope 授权、成功/错误结果与调用日志，不依赖具体领域服务。
+      </p>
+    </article>
+    <div class="down">↓ trusted scope</div>
+    <article class="layer">
+      <div class="layer-name">领域工具模块</div>
+      <p>
+        <code>tools/command-execution</code> 与 <code>tools/filesystem</code> 分别拥有自己的
+        Schema、最小领域 Port、结果投影和错误转换，不再共享聚合 Service 容器。
+      </p>
+    </article>
+    <div class="down">↓ 每次调用重新授权</div>
+    <article class="layer">
+      <div class="layer-name">Access Policy / Repository</div>
+      <p>
+        Policy 验证固定 tenant/user 身份、租户成员关系、workspace 归属和 thread 绑定；
+        Repository 独占 PostgreSQL 行映射，不依赖 Next Cookie 或 <code>server-only</code>。
+      </p>
+    </article>
+    <div class="down">↓ trusted scope</div>
+    <article class="layer">
+      <div class="layer-name">既有领域服务</div>
+      <p>
+        命令工具调用 <code>execution-service</code>，文件工具调用
+        <code>filesystem-service</code>；MCP 不复制查询上限、输出裁剪和文件沙盒规则。
+      </p>
+    </article>
+    <div class="down">↓</div>
+    <article class="layer">
+      <div class="layer-name">数据与文件层</div>
+      <p>
+        PostgreSQL 保存 SaaS scope、thread 和 M10 execution；本地 sandbox 仍按
+        tenant/user/thread 隔离。M11 不新增表，也不触碰命令执行状态机。
+      </p>
+    </article>
+  </section>
+
+  <div class="boundary">
+    <strong>关键边界：</strong>
+    浏览器中的 myAICanDo Agent 仍通过 AgentHarness 直接调用内部 Tool；MCP Server 是由外部 Host 启动的独立进程。
+    两条链路共享领域服务与安全规则，但不互相代理，也没有启动先后依赖；MCP 工具注册表是显式 allowlist，
+    不扫描目录或动态加载第三方模块。
+  </div>
+
+  <h2>七阶段数据流</h2>
+  <section class="stage-list">
+    <article class="stage">
+      <div class="stage-id">阶段 1<br>Host 启动<small>可信本机边界</small></div>
+      <div class="steps">
+        <div class="step"><b>1</b><p>MCP Host 直接使用 Bun 可执行文件和 <code>src/mcp/stdio-server.ts</code> 的绝对路径启动子进程。</p></div>
+        <div class="step"><b>2</b><p>入口读取 <code>DATABASE_URL</code>、<code>MCP_TENANT_HASH_ID</code>、<code>MCP_USER_HASH_ID</code>，缺少必填配置时向 stderr 报错并退出。</p></div>
+      </div>
+    </article>
+    <article class="stage">
+      <div class="stage-id">阶段 2<br>协议协商<small>discover / initialize / tools/list</small></div>
+      <div class="steps">
+        <div class="step"><b>3</b><p>Client 与 Server 通过新版 <code>server/discover</code> 或兼容旧版的 <code>initialize</code> 完成协议协商，Server 声明名称 <code>my-ai-can-do-mcp</code> 和项目版本。</p></div>
+        <div class="step"><b>4</b><p>Client 调用 <code>tools/list</code>，获得四个工具的中文说明、严格输入/输出 Schema 和只读 annotations。</p></div>
+      </div>
+    </article>
+    <article class="stage">
+      <div class="stage-id">阶段 3<br>请求校验<small>拒绝额外字段</small></div>
+      <div class="steps">
+        <div class="step"><b>5</b><p>SDK 按 Zod Schema 校验 <code>workspaceId</code>、<code>threadId</code>、工具特有参数和 limit；未知字段直接拒绝。</p></div>
+        <div class="step"><b>6</b><p>tenant/user 永远取自进程环境，不接受模型参数覆盖；每次调用生成独立 <code>requestId</code> 贯穿日志与错误结果。</p></div>
+      </div>
+    </article>
+    <article class="stage">
+      <div class="stage-id">阶段 4<br>Scope 鉴权<small>每次调用都验证</small></div>
+      <div class="steps">
+        <div class="step"><b>7</b><p>Access Policy 查询用户、租户成员关系和租户状态，再验证 workspace 属于该租户且可访问。</p></div>
+        <div class="step"><b>8</b><p>确认 thread 已持久化并绑定固定 tenant/user/workspace；不匹配时返回稳定错误，不进入领域服务。</p></div>
+      </div>
+    </article>
+    <article class="stage">
+      <div class="stage-id">阶段 5<br>领域调用<small>复用项目规则</small></div>
+      <div class="steps">
+        <div class="step"><b>9</b><p>execution 工具使用可信 scope 查询 M10 任务；列表只返回轻量字段，详情才返回受上限约束的 stdout/stderr/result。</p></div>
+        <div class="step"><b>10</b><p>filesystem 工具复用线程沙盒路径解析与 UTF-8、symlink、二进制、256,000 bytes 和最多 200 项限制。</p></div>
+      </div>
+    </article>
+    <article class="stage">
+      <div class="stage-id">阶段 6<br>结果投影<small>content + structuredContent</small></div>
+      <div class="steps">
+        <div class="step"><b>11</b><p>成功响应同时返回机器可消费的 <code>structuredContent</code> 和 JSON 文本 <code>content</code>，并符合声明的输出 Schema。</p></div>
+        <div class="step"><b>12</b><p>可预期业务失败返回 <code>isError: true</code> 与稳定错误结构；未知异常只对 Client 暴露 <code>internal_error</code>，细节写 stderr。</p></div>
+      </div>
+    </article>
+    <article class="stage">
+      <div class="stage-id">阶段 7<br>关闭与诊断<small>不污染协议通道</small></div>
+      <div class="steps">
+        <div class="step"><b>13</b><p>SIGINT、SIGTERM 或 stdin 关闭时停止接收调用，关闭 transport 和 PostgreSQL 连接池后退出。</p></div>
+        <div class="step"><b>14</b><p>结构化日志记录 requestId、工具名、状态和耗时但不记录 DATABASE_URL、完整文件内容或完整命令输出。</p></div>
+      </div>
+    </article>
+  </section>
+
+  <h2>四个只读工具协议</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>工具</th>
+        <th>输入</th>
+        <th>成功输出</th>
+        <th>边界</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>list_command_executions</code></td>
+        <td><code>workspaceId</code>、<code>threadId</code>、可选 <code>limit</code>，默认 20、最大 100</td>
+        <td>轻量 execution 列表、数量；包含 ID、命令、状态、attempt、重试链、摘要、截断标记和关键时间。</td>
+        <td>不返回 stdout、stderr 和 result；不订阅 SSE。</td>
+      </tr>
+      <tr>
+        <td><code>get_command_execution</code></td>
+        <td><code>workspaceId</code>、<code>threadId</code>、<code>executionId</code></td>
+        <td>完整 <code>CommandExecutionSnapshot</code>，包含受 M10 上限约束的输出和最终结果。</td>
+        <td>只查询当前 scope；不存在时返回 <code>execution_not_found</code>。</td>
+      </tr>
+      <tr>
+        <td><code>list_workspace_files</code></td>
+        <td><code>workspaceId</code>、<code>threadId</code>、可选 <code>path</code>，默认 <code>.</code></td>
+        <td><code>ListFilesystemDirectoryResult</code>，包含逻辑路径和最多 200 个目录项。</td>
+        <td>拒绝绝对路径、<code>..</code>、symlink 和越出当前线程沙盒的路径。</td>
+      </tr>
+      <tr>
+        <td><code>read_workspace_file</code></td>
+        <td><code>workspaceId</code>、<code>threadId</code>、<code>path</code></td>
+        <td><code>ReadFilesystemFileResult</code>，包含路径、UTF-8 文本、大小和摘要。</td>
+        <td>拒绝目录、二进制、symlink 和超过 256,000 bytes 的文件。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="lead">
+    四个工具统一声明 <code>readOnlyHint: true</code>、<code>destructiveHint: false</code>、
+    <code>idempotentHint: true</code>、<code>openWorldHint: false</code>。
+    首版不注册入队、取消、重试、文件写入、Skill 脚本执行或 checkpoint 恢复工具。
+  </p>
+
+  <h2>统一响应和错误</h2>
+  <section class="grid">
+    <article class="card">
+      <h3 class="good">成功结果</h3>
+      <pre><code>{
+  "ok": true,
+  "...": "与具体工具 outputSchema 对应的字段"
+}</code></pre>
+      <p>同一对象作为 <code>structuredContent</code>，并序列化为文本内容，兼容只读取文本的 Host。</p>
+    </article>
+    <article class="card">
+      <h3 class="warn">业务错误</h3>
+      <pre><code>{
+  "ok": false,
+  "error": {
+    "code": "thread_workspace_mismatch",
+    "message": "线程未绑定到指定工作区。",
+    "requestId": "..."
+  }
+}</code></pre>
+      <p>错误响应设置 <code>isError: true</code>；未知异常统一转换为 <code>internal_error</code>，不泄漏堆栈和数据库信息。</p>
+    </article>
+  </section>
+
+  <h2>本地 stdio 客户端配置</h2>
+  <section class="card">
+    <h3>推荐配置形态</h3>
+    <p>
+      MCP Host 必须直接启动 Bun，使用 Bun 和入口文件的绝对路径。下面仅为结构示例，
+      <code>DATABASE_URL</code> 应通过本机密钥或进程环境注入，不要把真实凭据提交到仓库。
+    </p>
+    <pre><code>{
+  "mcpServers": {
+    "my-ai-can-do": {
+      "command": "/absolute/path/to/bun",
+      "args": [
+        "/absolute/path/to/myAICanDo/src/mcp/stdio-server.ts"
+      ],
+      "env": {
+        "DATABASE_URL": "postgresql://&lt;user&gt;:&lt;password&gt;@127.0.0.1:5432/&lt;database&gt;",
+        "MCP_TENANT_HASH_ID": "tenant_demo",
+        "MCP_USER_HASH_ID": "user_demo",
+        "FILESYSTEM_SANDBOX_ROOT": "/absolute/path/to/var/agent-files"
+      }
+    }
+  }
+}</code></pre>
+    <p class="warn">
+      <strong>不要把 <code>yarn mcp:stdio</code> 配成 Host command：</strong>
+      Yarn 的启动横幅可能写入 stdout 并破坏 JSON-RPC。项目脚本仅用于开发者诊断，
+      实际 Host 配置应直接执行 Bun。
+    </p>
+  </section>
+
+  <h2>启动关系</h2>
+  <section class="relationship">
+    <article class="relation-item">
+      <div class="label">POSTGRESQL</div>
+      <h3>必需依赖</h3>
+      <p>MCP Server 启动和 scope/execution 查询需要数据库可连接；数据库不可用时应快速失败。</p>
+    </article>
+    <article class="relation-item">
+      <div class="label">MCP HOST</div>
+      <h3>按需拉起</h3>
+      <p>客户端使用时自动启动 stdio 子进程；退出客户端或关闭连接时结束该进程。</p>
+    </article>
+    <article class="relation-item">
+      <div class="label">YARN DEV</div>
+      <h3>无启动依赖</h3>
+      <p>MCP 直接调用运行时无关的领域服务，不经过 Next.js Route Handler，因此不要求 Web 服务运行。</p>
+    </article>
+    <article class="relation-item">
+      <div class="label">COMMAND WORKER</div>
+      <h3>读取时非必需</h3>
+      <p>四个工具不创建或改变任务；Worker 停止时仍可读取已有 execution，只是不会有新后台命令推进。</p>
+    </article>
+  </section>
+  <p class="lead">
+    因此本地读取场景只有一个硬性顺序：<span class="good">先保证 PostgreSQL 可连接，再由 MCP Host 启动 Server</span>。
+    <code>yarn dev</code> 和 <code>yarn worker:commands</code> 是否运行取决于页面与命令执行需求，不是 MCP 只读 Server 的前置条件。
+  </p>
+
+  <h2>数据影响与流向</h2>
+  <section class="impact-flow">
+    <div class="impact-row header">
+      <div>数据来源</div><div></div><div>流向</div><div>影响</div>
+    </div>
+    <div class="impact-row">
+      <div>MCP Host 环境变量</div><div class="impact-arrow">→</div>
+      <div>固定 tenant / user identity</div>
+      <div>身份不进入工具参数，模型不能在单次调用中切换租户或用户。</div>
+    </div>
+    <div class="impact-row">
+      <div>workspaceId / threadId</div><div class="impact-arrow">→</div>
+      <div>Access Policy → PostgreSQL</div>
+      <div>每次调用重新验证成员关系和资源绑定；尚未持久化的页面临时 thread 不可读取。</div>
+    </div>
+    <div class="impact-row">
+      <div><code>assistant_command_executions</code></div><div class="impact-arrow">→</div>
+      <div>execution adapters</div>
+      <div>只读取 M10 元数据和受限输出；不改变状态、不创建事件、不检查 Worker 心跳。</div>
+    </div>
+    <div class="impact-row">
+      <div>thread filesystem sandbox</div><div class="impact-arrow">→</div>
+      <div>filesystem adapters</div>
+      <div>沿用既有路径、symlink、类型和大小限制；不新增第二套目录解析。</div>
+    </div>
+    <div class="impact-row">
+      <div>领域服务结果</div><div class="impact-arrow">→</div>
+      <div>MCP result envelope</div>
+      <div>同时投影为结构化结果和文本结果，领域对象本身不因 MCP 改变。</div>
+    </div>
+    <div class="impact-row">
+      <div>AgentHarness / Skill / UI</div><div class="impact-arrow">→</div>
+      <div>原有内部链路</div>
+      <div>M11 不接管内部 Tool，不增加页面请求、数据库迁移、approval 或 checkpoint 行为。</div>
+    </div>
+  </section>
+
+  <h2>安全边界</h2>
+  <section class="grid">
+    <article class="card">
+      <h3 class="good">首版具备</h3>
+      <ul>
+        <li>受信任本机 stdio，不监听网络端口。</li>
+        <li>进程级 tenant/user 身份，不由模型传入。</li>
+        <li>workspace/thread 每次调用重新鉴权。</li>
+        <li>严格 Schema、只读 annotations、四工具 allowlist。</li>
+        <li>复用既有 execution 与 filesystem 限制。</li>
+        <li>stdout 协议专用，stderr 脱敏诊断。</li>
+      </ul>
+    </article>
+    <article class="card">
+      <h3 class="bad">首版不提供</h3>
+      <ul>
+        <li>不提供远程用户认证或公网访问。</li>
+        <li>不把本机环境变量视为可移植的 HTTP 身份凭证。</li>
+        <li>不执行命令、不修改文件、不取消或重试任务。</li>
+        <li>不执行 Skill 携带的脚本。</li>
+        <li>不自动恢复 Agent，不注入完整输出到 Agent 上下文。</li>
+        <li>不允许客户端绕过 scope 直接指定文件系统根路径。</li>
+      </ul>
+    </article>
+  </section>
+
+  <h2>未来演进到 Streamable HTTP</h2>
+  <section class="card">
+    <p>
+      远程 MCP 不是把 stdio transport 换成 HTTP 即可。未来应保留 Server factory、工具 Schema、
+      access policy 和领域适配器，另建独立的 Streamable HTTP 入口，并补齐下面的远程安全面：
+    </p>
+    <ol>
+      <li><strong>身份：</strong>使用 Bearer Token 或 OAuth，把 tenant/user 从服务端验证后的凭证生成，禁止复用 <code>MCP_TENANT_HASH_ID</code> / <code>MCP_USER_HASH_ID</code>。</li>
+      <li><strong>会话：</strong>定义 MCP session 生命周期、断线恢复和服务端水平扩展策略，不依赖单机进程状态。</li>
+      <li><strong>边界：</strong>增加 Origin/Host 校验、TLS、请求体上限、超时、限流和并发控制。</li>
+      <li><strong>审计：</strong>持久化调用主体、工具名、scope、状态、耗时和 requestId，并对敏感字段脱敏。</li>
+      <li><strong>部署：</strong>将远程 MCP 视为独立长期运行服务，不由 Next.js 请求临时承担，也不与命令 Worker 混为同一进程。</li>
+    </ol>
+    <p class="lead">
+      这一路径保证协议层可以复用，同时明确隔离“可信本机进程配置”和“远程多用户认证”两套完全不同的信任模型。
+    </p>
+  </section>
+</main>
+</body>
+</html>

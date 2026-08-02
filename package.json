@@ -9,6 +9,7 @@
     "seed:saas": "node scripts/seed-saas.mjs",
     "start": "next start",
     "worker:commands": "bun src/workers/command-execution-worker.ts",
+    "mcp:stdio": "bun src/mcp/stdio-server.ts",
     "lint": "eslint",
     "typecheck": "tsc --noEmit"
   },
@@ -22,6 +23,7 @@
     "@langchain/langgraph": "^1.4.4",
     "@langchain/langgraph-checkpoint-postgres": "^1.0.4",
     "@langchain/openai": "^1.5.1",
+    "@modelcontextprotocol/server": "^2.0.0",
     "jose": "^6.2.3",
     "langchain": "^1.5.0",
     "lucide-react": "^1.21.0",
@@ -34,6 +36,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/pg": "^8.20.0",

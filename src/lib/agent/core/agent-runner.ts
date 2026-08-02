@@ -53,6 +53,10 @@ import type {
   AgentMessage,
   CreateConfiguredAgentOptions,
 } from "./agent-definition";
+import {
+  findToolApprovalRequiredError,
+  ToolApprovalRequiredError,
+} from "./tool-approval-error";
 
 type StreamConfiguredAgentEventsOptions = CreateConfiguredAgentOptions & {
   contextPolicy?: ContextOffloadPolicy;
@@ -109,16 +113,6 @@ const AGENT_RETRY_OPTIONS = {
 };
 const FALLBACK_FILE_CONTENT_LIMIT = 4_000;
 const FALLBACK_SEARCH_MATCH_LIMIT = 20;
-
-class ToolApprovalRequiredError extends Error {
-  constructor(
-    public readonly pendingAction: ApprovalPendingPayload,
-    public readonly userMessage: string,
-  ) {
-    super(userMessage);
-    this.name = "ToolApprovalRequiredError";
-  }
-}
 
 async function createConfiguredAgent(
   definition: AgentDefinition,
@@ -361,21 +355,23 @@ export async function* streamConfiguredAgentEvents({
       queue.close();
     })
     .catch(async (error: unknown) => {
-      if (isToolApprovalRequiredError(error)) {
+      const approvalError = findToolApprovalRequiredError(error);
+      if (approvalError) {
         if (agentThreadId) {
           initializedAgentThreads.add(agentThreadId);
         }
-        const structuredResponse = createApprovalPendingStructuredResponse(error);
-        queue.push({ type: "text_delta", text: error.userMessage });
+        const structuredResponse =
+          createApprovalPendingStructuredResponse(approvalError);
+        queue.push({ type: "text_delta", text: approvalError.userMessage });
         queue.push({
           type: "structured_response",
           response: structuredResponse,
         });
         runLogger.info(
           {
-            approvalId: error.pendingAction.actionId,
-            toolCallId: error.pendingAction.toolCallId,
-            toolName: error.pendingAction.toolName,
+            approvalId: approvalError.pendingAction.actionId,
+            toolCallId: approvalError.pendingAction.toolCallId,
+            toolName: approvalError.pendingAction.toolName,
           },
           "agent invoke paused for tool approval",
         );
@@ -2182,12 +2178,6 @@ function normalizeToolResult(result: unknown) {
 
 function formatUnknownError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isToolApprovalRequiredError(
-  error: unknown,
-): error is ToolApprovalRequiredError {
-  return error instanceof ToolApprovalRequiredError;
 }
 
 function toError(error: unknown) {

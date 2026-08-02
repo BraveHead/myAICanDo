@@ -16,6 +16,10 @@ import {
   type PersistedCommandExecutionEvent,
 } from "./contracts";
 import {
+  validateExecuteCommandArgs,
+  type ValidatedCommandArgs,
+} from "./command-policy";
+import {
   getPostgresPool,
   hasDatabaseUrl,
 } from "@/lib/server/postgres-runtime";
@@ -296,8 +300,11 @@ export async function enqueueApprovedCommandExecution(
 export async function listCommandExecutions(
   scope: PendingActionScope,
   threadId: string,
+  limit = 100,
 ) {
   await ensureCommandExecutionStore();
+  const normalizedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 100;
+  const boundedLimit = Math.min(100, Math.max(1, normalizedLimit));
   const result = await getPostgresPool().query<ExecutionRow>(
     `${executionSelectSql()}
      WHERE execution.tenant_hash_id = $1
@@ -305,8 +312,14 @@ export async function listCommandExecutions(
        AND execution.workspace_id = $3
        AND execution.thread_id = $4
      ORDER BY execution.created_at DESC
-     LIMIT 100`,
-    [scope.tenantHashId, scope.userHashId, scope.workspaceId, threadId],
+     LIMIT $5`,
+    [
+      scope.tenantHashId,
+      scope.userHashId,
+      scope.workspaceId,
+      threadId,
+      boundedLimit,
+    ],
   );
   return result.rows.map(rowToSnapshot);
 }
@@ -1424,32 +1437,15 @@ function createExecutionApprovalResponse(
 }
 
 function toCommandArgs(value: unknown) {
-  if (!isRecord(value)) {
+  const validation = validateExecuteCommandArgs(value);
+  if (!validation.ok) {
     throw new CommandExecutionStoreError(
       "invalid_tool_args",
-      "命令参数不是对象。",
+      validation.message,
       400,
     );
   }
-  if (
-    typeof value.command !== "string" ||
-    !Array.isArray(value.args) ||
-    !value.args.every((arg) => typeof arg === "string") ||
-    typeof value.cwd !== "string" ||
-    typeof value.timeoutMs !== "number"
-  ) {
-    throw new CommandExecutionStoreError(
-      "invalid_tool_args",
-      "命令参数不完整。",
-      400,
-    );
-  }
-  return {
-    args: value.args,
-    command: value.command,
-    cwd: value.cwd,
-    timeoutMs: value.timeoutMs,
-  };
+  return validation.value as ValidatedCommandArgs;
 }
 
 function toExecutionEvent(value: unknown): CommandExecutionEvent | null {
